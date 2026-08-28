@@ -42,9 +42,36 @@ RENT_BUFFER=$(solana rent "$BUFFER_LEN" --url "$MAINNET_RPC" --output json 2>/de
   || die "could not obtain live temporary-buffer rent from $MAINNET_RPC"
 TX_COUNT=$(( SIZE / 1000 + 8 ))
 FEES=$(( TX_COUNT * 5000 ))
-RENT=$(( RENT_PROGRAMDATA + RENT_PROGRAM ))
-TOTAL=$(( RENT + FEES ))
-PEAK_REQUIRED=$(( TOTAL + RENT_BUFFER ))
+
+# An UPGRADE is not a first deploy. The program and ProgramData accounts
+# already exist and are already rent-exempt, so their rent is not owed again;
+# only the temporary buffer is, and that is refunded when it closes. Charging
+# first-deploy rent for an upgrade demanded ~1.64 SOL to spend ~0.0006, and
+# refused a wallet that could comfortably afford the upgrade.
+IS_UPGRADE=0
+if solana account "$PROGRAM_ID" --url "$MAINNET_RPC" >/dev/null 2>&1; then
+  IS_UPGRADE=1
+fi
+
+if [ "$IS_UPGRADE" = "1" ]; then
+  # ProgramData is reused. If the new artifact needs a LARGER allocation than
+  # the deployed one, the loader cannot grow it in place -- surface that as a
+  # refusal rather than letting the deploy fail halfway.
+  DEPLOYED_LEN=$(solana program show "$PROGRAM_ID" --url "$MAINNET_RPC" 2>/dev/null \
+    | awk -F': ' '/Data Length/{print $2}' | awk '{print $1}')
+  DEPLOYED_LEN=${DEPLOYED_LEN:-0}
+  if [ "$DEPLOYED_LEN" -gt 0 ] && [ "$SIZE" -gt "$DEPLOYED_LEN" ]; then
+    die "new artifact is $SIZE bytes but the deployed ProgramData holds $DEPLOYED_LEN;
+   the upgradeable loader cannot grow ProgramData in place"
+  fi
+  RENT=0
+  TOTAL=$FEES
+  PEAK_REQUIRED=$(( FEES + RENT_BUFFER ))
+else
+  RENT=$(( RENT_PROGRAMDATA + RENT_PROGRAM ))
+  TOTAL=$(( RENT + FEES ))
+  PEAK_REQUIRED=$(( TOTAL + RENT_BUFFER ))
+fi
 
 HAVE=$(solana balance "$EXPECTED_UPGRADE_AUTHORITY" --url "$MAINNET_RPC" --lamports 2>/dev/null | awk '{print $1}')
 HAVE=${HAVE:-0}
@@ -69,21 +96,38 @@ echo "   WHAT YOU PAY"
 echo "  ============================================================"
 python3 - <<PYCOST
 rp, ra, rb, f, t, peak, have = $RENT_PROGRAMDATA, $RENT_PROGRAM, $RENT_BUFFER, $FEES, $TOTAL, $PEAK_REQUIRED, $HAVE
+upgrade = $IS_UPGRADE
 row = lambda l, v: print(f"   {l:<34}{v/1e9:>12.6f} SOL")
-row("programdata rent (recoverable)", rp)
-row("program account rent (recoverable)", ra)
-row(f"transaction fees (~$TX_COUNT tx, spent)", f)
-print("   " + "-"*46)
-row("NET DEPLOY COST", t)
-row("temporary buffer rent (refunded)", rb)
-row("PEAK BALANCE NEEDED", peak)
-print()
-row("wallet balance now", have)
-row("balance after", have - t)
-print()
-print(f"   Of that, {(rp+ra)/1e9:.4f} SOL is rent-exemption LOCKED in the program")
-print(f"   account -- not spent. It returns only if the program is ever closed.")
-print(f"   Genuinely consumed: {f/1e9:.6f} SOL in fees.")
+if upgrade:
+    print("   UPGRADE of an existing program -- the program and ProgramData")
+    print("   accounts already exist and their rent is NOT charged again.")
+    print()
+    row(f"transaction fees (~$TX_COUNT tx, spent)", f)
+    print("   " + "-"*46)
+    row("NET UPGRADE COST", t)
+    row("temporary buffer rent (refunded)", rb)
+    row("PEAK BALANCE NEEDED", peak)
+    print()
+    row("wallet balance now", have)
+    row("balance after", have - t)
+    print()
+    print(f"   The buffer rent leaves and returns within the deploy. Genuinely")
+    print(f"   consumed: {f/1e9:.6f} SOL in fees.")
+else:
+    row("programdata rent (recoverable)", rp)
+    row("program account rent (recoverable)", ra)
+    row(f"transaction fees (~$TX_COUNT tx, spent)", f)
+    print("   " + "-"*46)
+    row("NET DEPLOY COST", t)
+    row("temporary buffer rent (refunded)", rb)
+    row("PEAK BALANCE NEEDED", peak)
+    print()
+    row("wallet balance now", have)
+    row("balance after", have - t)
+    print()
+    print(f"   Of that, {(rp+ra)/1e9:.4f} SOL is rent-exemption LOCKED in the program")
+    print(f"   account -- not spent. It returns only if the program is ever closed.")
+    print(f"   Genuinely consumed: {f/1e9:.6f} SOL in fees.")
 PYCOST
 echo "  ============================================================"
 echo
