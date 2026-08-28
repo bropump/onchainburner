@@ -1545,3 +1545,57 @@ table.data tr:last-child td {
     display: none;
   }
 }
+
+/* Home: the four-step "what this does" diagram under the hero blurb. Sized
+   in the SVG's own viewBox units so it scales down to phone width without
+   the text reflowing or the arrows detaching from the boxes. */
+.how-it-works {
+  margin: 26px 0 0;
+  /* Below ~600px the four steps would shrink the labels to unreadable, so
+     the figure scrolls instead of scaling: min-width holds the type at a
+     legible size and the diagram pans. */
+  overflow-x: auto;
+}
+.how-it-works svg {
+  display: block;
+  width: 100%;
+  min-width: 580px;
+  height: auto;
+}
+.how-it-works rect {
+  fill: var(--panel);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.how-it-works rect.hiw-key {
+  fill: var(--panel-2);
+  stroke: var(--line-strong);
+}
+.how-it-works rect.hiw-burn {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+.how-it-works line {
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+}
+.how-it-works text {
+  text-anchor: middle;
+  font-family: inherit;
+}
+.how-it-works .hiw-h {
+  fill: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+.how-it-works .hiw-s {
+  fill: var(--ink-2);
+  font-size: 11.5px;
+}
+.how-it-works .hiw-burn-t {
+  fill: var(--accent-ink);
+}
+.how-it-works .hiw-foot {
+  fill: var(--ink-3);
+  font-size: 11.5px;
+}

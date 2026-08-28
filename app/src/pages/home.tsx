@@ -83,6 +83,68 @@ export function HomePage() {
         </p>
       </div>
 
+      <figure className="how-it-works">
+        <svg viewBox="-3 -2 726 137" role="img" aria-labelledby="how-title">
+          <title id="how-title">
+            Creator fees go into a vault, which buys your chosen tokens and
+            burns them.
+          </title>
+          <defs>
+            <marker
+              id="hiw-arrow"
+              viewBox="0 0 8 8"
+              refX="7"
+              refY="4"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto"
+            >
+              <path d="M0 0 L8 4 L0 8 z" fill="var(--line-strong)" />
+            </marker>
+          </defs>
+
+          {/* fees in */}
+          <rect x="1" y="30" width="150" height="52" rx="8" />
+          <text className="hiw-h" x="76" y="52">Creator fees</text>
+          <text className="hiw-s" x="76" y="69">arrive as SOL</text>
+
+          <line
+            x1="153" y1="56" x2="207" y2="56"
+            markerEnd="url(#hiw-arrow)"
+          />
+
+          {/* vault */}
+          <rect className="hiw-key" x="211" y="16" width="176" height="80" rx="8" />
+          <text className="hiw-h" x="299" y="46">Your vault</text>
+          <text className="hiw-s" x="299" y="64">rules fixed forever,</text>
+          <text className="hiw-s" x="299" y="79">no way to withdraw</text>
+
+          <line
+            x1="389" y1="56" x2="443" y2="56"
+            markerEnd="url(#hiw-arrow)"
+          />
+
+          {/* buy */}
+          <rect x="447" y="30" width="118" height="52" rx="8" />
+          <text className="hiw-h" x="506" y="52">Buys</text>
+          <text className="hiw-s" x="506" y="69">the tokens you picked</text>
+
+          <line
+            x1="567" y1="56" x2="601" y2="56"
+            markerEnd="url(#hiw-arrow)"
+          />
+
+          {/* burn */}
+          <rect className="hiw-burn" x="605" y="30" width="114" height="52" rx="8" />
+          <text className="hiw-h hiw-burn-t" x="662" y="52">Burns them</text>
+          <text className="hiw-s hiw-burn-t" x="662" y="69">gone for good</text>
+
+          <text className="hiw-foot" x="360" y="124">
+            If any step fails, the whole thing is undone and your money stays put.
+          </text>
+        </svg>
+      </figure>
+
       <div className="cards">
         <Link to="/launch" className="card" style={{ textDecoration: "none" }}>
           <h3>Launch a new token</h3>
