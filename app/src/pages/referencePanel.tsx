@@ -297,8 +297,12 @@ export function isSupportedReference(
   mint: string,
   candidate: MarketCandidate
 ): boolean {
+  // Burned LP is the strongest form of locked — nobody holds the tokens that
+  // could withdraw it, ever. Custody-locked is the Burn & Earn / incinerator
+  // case: the LP exists but is held somewhere it cannot be recalled from.
   if (candidate.durability === "protocol-owned") return true;
-  if (candidate.durability === "locked-lp") return true;
+  if (candidate.durability === "burned") return true;
+  if (candidate.durability === "locked-by-custody") return true;
   return WITHDRAWABLE_ALLOWED.includes(mint);
 }
 
@@ -325,13 +329,16 @@ export function referencesAreSupported(
 
 function lockText(candidate: MarketCandidate): string {
   if (candidate.durability === "protocol-owned") return "LOCKED";
-  if (candidate.durability === "locked-lp") {
+  if (
+    candidate.durability === "burned" ||
+    candidate.durability === "locked-by-custody"
+  ) {
     return candidate.lockedPct === undefined
       ? "LOCKED"
       : `LOCKED ${candidate.lockedPct.toFixed(1)}%`;
   }
-  if (candidate.durability === "transient-positions") return "NOT LOCKED";
-  return "UNKNOWN";
+  if (candidate.durability === "not-locked") return "NOT LOCKED";
+  return "UNVERIFIED";
 }
 
 function initials(value: string): string {
@@ -381,7 +388,8 @@ function ReferenceFacts({
       <div
         className={`reference-fact${
           candidate?.durability === "protocol-owned" ||
-          candidate?.durability === "locked-lp"
+          candidate?.durability === "burned" ||
+          candidate?.durability === "locked-by-custody"
             ? " ok"
             : candidate
               ? " warn"

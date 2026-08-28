@@ -25,11 +25,15 @@ export type MarketCandidate = {
   pool: string;
   venue: string;
   depthLamports: string;
+  // Mirrors MarketDurability in quote-service/markets.ts. Keep the two in
+  // step: a value the service emits but this union omits does not fail to
+  // compile — it silently falls through every check that switches on it.
   durability:
     | "protocol-owned"
-    | "locked-lp"
-    | "transient-positions"
-    | "unknown";
+    | "burned"
+    | "locked-by-custody"
+    | "not-locked"
+    | "unverified";
   lockedPct?: number;
   lockedDepthLamports?: string;
   meetsDepthFloor: boolean;
