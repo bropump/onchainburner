@@ -46,3 +46,27 @@ app/node_modules/
 **/.env.*
 !**/.env.example
 prototypes/
+
+# Generated JavaScript and run output.
+.campaign-build/
+*.log
+*.so
+*.tsbuildinfo
+coverage/
+.nyc_output/
+.cache/
+.vite/
+**/.wrangler/
+
+# Editor and operating-system cruft.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Package-manager diagnostic logs.
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
