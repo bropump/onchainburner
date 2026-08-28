@@ -64,6 +64,7 @@ export type MetadataUploadRequest = Readonly<{
   name: string;
   symbol: string;
   description: string;
+  links?: { website?: string; twitter?: string; telegram?: string };
   image: Uint8Array;
   imageContentType: (typeof METADATA_IMAGE_TYPES)[number];
 }>;
@@ -322,6 +323,9 @@ export function makeService(baseUrl: string, callerPaid = false) {
           name: request.name,
           symbol: request.symbol,
           description: request.description,
+          ...(request.links && Object.keys(request.links).length
+            ? { links: request.links }
+            : {}),
           image: {
             contentType: request.imageContentType,
             dataBase64: Buffer.from(request.image).toString("base64"),

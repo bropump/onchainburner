@@ -120,6 +120,7 @@ export type MetadataUploadInput = Readonly<{
   name: string;
   symbol: string;
   description: string;
+  links?: Partial<Record<"website" | "twitter" | "telegram", string>>;
   image: Buffer;
   imageContentType: (typeof ACCEPTED_METADATA_IMAGE_TYPES)[number];
 }>;
@@ -178,6 +179,72 @@ function hasImageSignature(
   );
 }
 
+const METADATA_LINK_KEYS = ["website", "twitter", "telegram"] as const;
+type MetadataLinkKey = (typeof METADATA_LINK_KEYS)[number];
+
+/** Optional socials, normalised to absolute http(s) URLs or dropped. */
+function parseMetadataLinks(raw: unknown): Partial<Record<MetadataLinkKey, string>> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new MetadataUploadError(
+      "INVALID_UPLOAD_REQUEST",
+      "links must be an object",
+      400
+    );
+  }
+  const object = raw as Record<string, unknown>;
+  const unknown = Object.keys(object).filter(
+    (key) => !(METADATA_LINK_KEYS as readonly string[]).includes(key)
+  );
+  if (unknown.length) {
+    throw new MetadataUploadError(
+      "INVALID_UPLOAD_REQUEST",
+      `links contains unsupported fields: ${unknown.join(",")}`,
+      400
+    );
+  }
+  const out: Partial<Record<MetadataLinkKey, string>> = {};
+  for (const key of METADATA_LINK_KEYS) {
+    const value = object[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string") {
+      throw new MetadataUploadError(
+        "INVALID_UPLOAD_REQUEST",
+        `${key} must be a string`,
+        400
+      );
+    }
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > 200) {
+      throw new MetadataUploadError(
+        "INVALID_UPLOAD_REQUEST",
+        `${key} must not exceed 200 characters`,
+        400
+      );
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      throw new MetadataUploadError(
+        "INVALID_UPLOAD_REQUEST",
+        `${key} must be a full URL beginning http:// or https://`,
+        400
+      );
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new MetadataUploadError(
+        "INVALID_UPLOAD_REQUEST",
+        `${key} must use http or https`,
+        400
+      );
+    }
+    out[key] = parsed.toString();
+  }
+  return out;
+}
+
 function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new MetadataUploadError(
@@ -188,7 +255,8 @@ function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
   }
   const object = parsed as Record<string, unknown>;
   const unknown = Object.keys(object).filter(
-    (key) => !["name", "symbol", "description", "image"].includes(key)
+    (key) =>
+      !["name", "symbol", "description", "image", "links"].includes(key)
   );
   if (unknown.length) {
     throw new MetadataUploadError(
@@ -222,6 +290,11 @@ function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
       400
     );
   }
+  // Optional socials. These are pasted by a stranger and then written to
+  // PERMANENT storage, so each is parsed as a URL and restricted to http(s):
+  // a `javascript:` or `data:` URI in a token's metadata is a live payload
+  // for every site that renders it, and it could never be edited out.
+  const links = parseMetadataLinks(object.links);
   if (
     !object.image ||
     typeof object.image !== "object" ||
@@ -301,6 +374,7 @@ function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
     name,
     symbol,
     description,
+    links,
     image: bytes,
     imageContentType: typedContentType,
   };
@@ -1548,6 +1622,10 @@ export function createIrysMetadataUploadExecutor(
           symbol: input.symbol,
           description: input.description,
           image,
+          // Pump and the explorers read these at the top level. Absent keys
+          // are omitted rather than written empty, so a token with no socials
+          // carries no dead fields in permanent storage.
+          ...(input.links ?? {}),
         }),
         "utf8"
       );

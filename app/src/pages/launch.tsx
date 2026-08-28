@@ -53,6 +53,9 @@ export function LaunchPage() {
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [description, setDescription] = useState("");
+  const [website, setWebsite] = useState("");
+  const [twitter, setTwitter] = useState("");
+  const [telegram, setTelegram] = useState("");
   const [uri, setUri] = useState("");
   const [metadataImage, setMetadataImage] = useState<File | null>(null);
   const [metadataDeliveryImageUri, setMetadataDeliveryImageUri] = useState<
@@ -213,6 +216,11 @@ export function LaunchPage() {
         name: name.trim(),
         symbol: symbol.trim(),
         description: description.trim(),
+        links: {
+          ...(website.trim() ? { website: website.trim() } : {}),
+          ...(twitter.trim() ? { twitter: twitter.trim() } : {}),
+          ...(telegram.trim() ? { telegram: telegram.trim() } : {}),
+        },
         image: new Uint8Array(await metadataImage.arrayBuffer()),
         imageContentType: metadataImage.type as
           | "image/png"
@@ -461,6 +469,39 @@ export function LaunchPage() {
                   disabled={running || uploadingMetadata}
                 />
               </label>
+              <label className="field">
+                <span className="name">Website (optional)</span>
+                <input
+                  type="url"
+                  value={website}
+                  maxLength={200}
+                  placeholder="https://yourtoken.com"
+                  onChange={(event) => setWebsite(event.target.value)}
+                  disabled={running || uploadingMetadata}
+                />
+              </label>
+              <label className="field">
+                <span className="name">X (optional)</span>
+                <input
+                  type="url"
+                  value={twitter}
+                  maxLength={200}
+                  placeholder="https://x.com/yourtoken"
+                  onChange={(event) => setTwitter(event.target.value)}
+                  disabled={running || uploadingMetadata}
+                />
+              </label>
+              <label className="field">
+                <span className="name">Telegram (optional)</span>
+                <input
+                  type="url"
+                  value={telegram}
+                  maxLength={200}
+                  placeholder="https://t.me/yourtoken"
+                  onChange={(event) => setTelegram(event.target.value)}
+                  disabled={running || uploadingMetadata}
+                />
+              </label>
               <div className="metadata-upload">
                 <label className="field metadata-image">
                   <span className="name">Upload image and metadata</span>
@@ -523,11 +564,6 @@ export function LaunchPage() {
                   onChange={(event) => setUri(event.target.value)}
                   disabled={running || uploadingMetadata}
                 />
-                <span className="metadata-uri-help">
-                  The upload is compressed, stored permanently on Irys, and
-                  cached for delivery by Cloudflare. You can also paste an
-                  existing hosted metadata URI.
-                </span>
               </label>
             </div>
           </div>

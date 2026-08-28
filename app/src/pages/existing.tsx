@@ -368,9 +368,10 @@ export function ExistingPage() {
       <div className="hero-copy">
         <h1>Create a vault for an existing token</h1>
         <p>
-          Any mint can be the namespace: the vault is an ordinary System
-          account, and any SOL source funds it — Pump creator fees, Meteora or
-          Raydium fee claims, or a plain transfer.
+          Point your creator payments at a vault and it buys and burns the
+          tokens you choose, over and over, for as long as money keeps
+          arriving. Any SOL works — creator fees, trading fees, or someone
+          just sending it.
         </p>
       </div>
 

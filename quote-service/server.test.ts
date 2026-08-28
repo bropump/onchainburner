@@ -527,6 +527,47 @@ describe("keyless HTTP boundary", () => {
     });
   });
 
+  it("writes optional socials into the permanent metadata, omitting blanks", async () => {
+    const writes: Buffer[] = [];
+    const execute = createIrysMetadataUploadExecutor(
+      {
+        getBalance: async () => ({ toString: () => "100" }),
+        getPrice: async () => ({ toString: () => "1" }),
+        upload: async (data) => {
+          writes.push(Buffer.from(data));
+          return { id: (writes.length === 1 ? "i" : "m").repeat(43) };
+        },
+        utils: { fromAtomic: (value) => value.toString() },
+      },
+      {
+        compress: async () => ({ image: WEBP, contentType: "image/webp" }),
+        deliveryUri: testCompressor.deliveryUri,
+      }
+    );
+    await execute({
+      name: "Burner",
+      symbol: "BURN",
+      description: "With socials",
+      links: {
+        website: "https://burner.example/",
+        twitter: "https://x.com/burner",
+      },
+      image: Buffer.from("89504e470d0a1a0a", "hex"),
+      imageContentType: "image/png",
+    });
+
+    // telegram was never supplied, so it must not appear at all: an empty
+    // key would be written to permanent storage and could never be removed.
+    expect(JSON.parse(writes[1].toString("utf8"))).to.deep.equal({
+      name: "Burner",
+      symbol: "BURN",
+      description: "With socials",
+      image: `https://gateway.irys.xyz/${"i".repeat(43)}`,
+      website: "https://burner.example/",
+      twitter: "https://x.com/burner",
+    });
+  });
+
   it("reports insufficient Irys credits before writing either data item", async () => {
     let uploads = 0;
     const execute = createIrysMetadataUploadExecutor(
