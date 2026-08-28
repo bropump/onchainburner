@@ -66,7 +66,10 @@ AUTH="$AUTH_KEYPAIR_PATH"
 # upload after the clone and pre-flight have already succeeded. Point the
 # config at the temp authority file for the duration and restore it after,
 # so the key still never lands anywhere permanent.
-PREV_CLI_KEYPAIR="$(solana config get keypair 2>/dev/null | awk -F': ' '/Keypair Path/{print $2}' | tr -d ' ')"
+# `solana config get` prints "Key Path:", NOT "Keypair Path:". Matching the
+# wrong label left this empty, so the restore silently did nothing and the
+# config kept pointing at the temp authority file after it was shredded.
+PREV_CLI_KEYPAIR="$(solana config get 2>/dev/null | awk -F': ' '/Key Path/{print $2}' | tr -d ' ')"
 restore_cli_keypair() {
   [ -n "$PREV_CLI_KEYPAIR" ] \
     && solana config set --keypair "$PREV_CLI_KEYPAIR" >/dev/null 2>&1 || true

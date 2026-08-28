@@ -49,16 +49,48 @@ FEES=$(( TX_COUNT * 5000 ))
 # first-deploy rent for an upgrade demanded ~1.64 SOL to spend ~0.0006, and
 # refused a wallet that could comfortably afford the upgrade.
 IS_UPGRADE=0
+PROGRAMDATA_ADDRESS=""
 if solana account "$PROGRAM_ID" --url "$MAINNET_RPC" >/dev/null 2>&1; then
   IS_UPGRADE=1
+  # ProgramData address lives in the program account's data at bytes 4..36.
+  PROGRAMDATA_ADDRESS=$(curl -s -m 30 "$MAINNET_RPC" -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"$PROGRAM_ID\",{\"encoding\":\"base64\"}]}" \
+    | python3 -c "
+import sys, json, base64
+A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+try:
+    v = json.load(sys.stdin)['result']['value']
+    b = base64.b64decode(v['data'][0])[4:36]
+    n = int.from_bytes(b, 'big'); o = ''
+    while n: o = A[n % 58] + o; n //= 58
+    for c in b:
+        if c == 0: o = '1' + o
+        else: break
+    print(o)
+except Exception:
+    print('')
+" 2>/dev/null)
 fi
 
 if [ "$IS_UPGRADE" = "1" ]; then
   # ProgramData is reused. If the new artifact needs a LARGER allocation than
   # the deployed one, the loader cannot grow it in place -- surface that as a
   # refusal rather than letting the deploy fail halfway.
-  DEPLOYED_LEN=$(solana program show "$PROGRAM_ID" --url "$MAINNET_RPC" 2>/dev/null \
-    | awk -F': ' '/Data Length/{print $2}' | awk '{print $1}')
+  # Read the size over plain RPC. `solana program show` needs a default
+  # signer configured and dies without one, which is not a thing a
+  # read-only size check should depend on.
+  DEPLOYED_LEN=$(curl -s -m 30 "$MAINNET_RPC" -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"$PROGRAMDATA_ADDRESS\",{\"encoding\":\"base64\"}]}" \
+    | python3 -c "
+import sys, json, base64
+try:
+    v = json.load(sys.stdin)['result']['value']
+    print(len(base64.b64decode(v['data'][0])) if v else 0)
+except Exception:
+    print(0)
+" 2>/dev/null)
   DEPLOYED_LEN=${DEPLOYED_LEN:-0}
   if [ "$DEPLOYED_LEN" -gt 0 ] && [ "$SIZE" -gt "$DEPLOYED_LEN" ]; then
     die "new artifact is $SIZE bytes but the deployed ProgramData holds $DEPLOYED_LEN;
