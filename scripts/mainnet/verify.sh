@@ -61,6 +61,25 @@ ylw "publishing pinned build metadata (signed by the upgrade authority) ..."
 read_authority_keypair "$EXPECTED_UPGRADE_AUTHORITY"
 AUTH="$AUTH_KEYPAIR_PATH"
 
+# solana-verify reads the Solana CLI config for its fee payer and ignores
+# --keypair for that, so a stale or missing `keypair_path` there fails the
+# upload after the clone and pre-flight have already succeeded. Point the
+# config at the temp authority file for the duration and restore it after,
+# so the key still never lands anywhere permanent.
+PREV_CLI_KEYPAIR="$(solana config get keypair 2>/dev/null | awk -F': ' '/Keypair Path/{print $2}' | tr -d ' ')"
+restore_cli_keypair() {
+  [ -n "$PREV_CLI_KEYPAIR" ] \
+    && solana config set --keypair "$PREV_CLI_KEYPAIR" >/dev/null 2>&1 || true
+}
+# _common.sh owns the EXIT/INT/TERM traps that SHRED the authority key. Chain
+# onto them rather than replacing: a bare `trap ... EXIT` here would silently
+# drop the shred and leave the key on disk.
+trap 'restore_cli_keypair; cleanup_authority_keypair' EXIT
+trap 'restore_cli_keypair; cleanup_authority_keypair; exit 130' INT
+trap 'restore_cli_keypair; cleanup_authority_keypair; exit 143' TERM HUP
+solana config set --keypair "$AUTH" >/dev/null 2>&1 \
+  || die "could not point the Solana CLI config at the authority key"
+
 solana-verify verify-from-repo \
   "$SOURCE_REPO_URL" \
   --commit-hash "$SOURCE_COMMIT" \
