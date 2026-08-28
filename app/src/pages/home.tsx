@@ -71,35 +71,35 @@ export function HomePage() {
           provably.
         </h1>
         <p>
-          Your creator fees go to an address you pick the rules for. When
-          money arrives, anyone can press go: it buys the tokens you chose,
-          in the shares you chose, and burns them. If any part of that
-          fails, the whole thing is undone and your money stays where it is.
+          Your creator fees go into a vault on Solana. The vault has one
+          job: buy the tokens you picked and burn them. That is the only
+          thing it can ever do.
         </p>
         <p>
-          Nobody can change it afterwards — not us, not you. There is no way
-          to withdraw the money, no way to edit the tokens, and no owner.
-          The rules are baked into the address itself, so changing anything
-          just gives you a different, empty address.
+          Nobody can take the money out — not us, not you, not anyone.
+          There is no withdraw button, because one was never written. And
+          the vault's rules are fixed the moment you create it: they are
+          part of its address, so they can never be edited afterwards.
         </p>
       </div>
 
       <div className="cards">
         <Link to="/launch" className="card" style={{ textDecoration: "none" }}>
-          <h3>Launch a token + vault</h3>
+          <h3>Launch a new token</h3>
           <p>
-            Create a Pump.fun token, choose burn targets and weights, and
-            commit the one-shot creator fee share to the vault — atomically
-            with the proof that the vault can actually burn.
+            Make a Pump.fun token, choose which tokens its fees should buy
+            and burn, and point the fees at the vault. You get one shot at
+            pointing them, so we check the vault works first, in the same
+            transaction.
           </p>
           <span className="go">launch →</span>
         </Link>
         <Link to="/existing" className="card" style={{ textDecoration: "none" }}>
-          <h3>Vault for an existing token</h3>
+          <h3>Vault for a token you already have</h3>
           <p>
-            Paste any mint, pick targets, validate on chain, create the ATAs,
-            and get an address to point payouts at. Works for any SOL source,
-            not just Pump.
+            Paste the token's address, choose what to buy and burn, and get
+            a vault address to send fees to. Any source of SOL works, not
+            just Pump.
           </p>
           <span className="go">create a vault →</span>
         </Link>
@@ -109,8 +109,8 @@ export function HomePage() {
         <div className="panel" style={{ marginTop: 24 }}>
           <h2>Vaults created in this browser</h2>
           <p className="sub">
-            The chain stores no config account, so these configs live only
-            here (and in the addresses they derive).
+            Solana does not store your choices anywhere, so they are kept in
+            this browser. The vault address itself is the permanent record.
           </p>
           <div className="vaultlist">
             {vaults.map((record) => (
