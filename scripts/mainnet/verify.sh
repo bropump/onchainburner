@@ -92,8 +92,7 @@ solana-verify verify-from-repo \
   --arch v3 \
   --cargo-build-sbf-args="--tools-version v1.53" \
   --skip-build \
-  --skip-prompt \
-  -- --locked
+  --skip-prompt
 
 ylw "checking the uploaded verification record ..."
 PDA_OUTPUT="$(solana-verify get-program-pda \
