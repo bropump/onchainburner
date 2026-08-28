@@ -1,7 +1,7 @@
 //! THE PRODUCTION SOLANA PROGRAM.
 //!
 //! Per `CLAUDE.md`, Pinocchio is the production framework and this crate is
-//! what gets deployed. Program id `5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV`.
+//! what gets deployed. Program id `burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5`.
 //!
 //! Error codes 6000..=6043 are defined in `error.rs` and are client-visible and
 //! append-only. There is no canonical IDL: clients encode instructions from the

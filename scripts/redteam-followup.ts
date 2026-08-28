@@ -40,7 +40,7 @@ if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/.test(RPC_URL)) {
   throw new Error(`refusing non-loopback RPC ${RPC_URL}`);
 }
 const PROGRAM = new PublicKey(
-  process.env.BURNER_PROGRAM_ID ?? "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV"
+  process.env.BURNER_PROGRAM_ID ?? "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5"
 );
 const NEIRO = new PublicKey("CTg3ZgYx79zrE1MteDVkmkcGniiFrK1hJ6yiabropump");
 const JTO = new PublicKey("jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL");

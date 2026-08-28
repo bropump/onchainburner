@@ -14,7 +14,7 @@ fi
 
 port="${SURFPOOL_PORT:-9900}"
 export RPC="${RPC:-http://127.0.0.1:${port}}"
-export BURNER_PROGRAM_ID="${BURNER_PROGRAM_ID:-5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV}"
+export BURNER_PROGRAM_ID="${BURNER_PROGRAM_ID:-burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5}"
 export FORK_DEX_PROFILE=pool
 
 echo "== redteam-ci: stop leftover surfpool, wipe .surfpool/ =="

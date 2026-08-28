@@ -33,7 +33,7 @@ const SO =
 const PROGRAM = new PublicKey(
   process.argv[4] ??
     process.env.BURNER_PROGRAM_ID ??
-    "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV"
+    "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5"
 );
 
 const LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");

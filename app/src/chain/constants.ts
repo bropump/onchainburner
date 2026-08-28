@@ -9,7 +9,7 @@ const env: Record<string, string | undefined> =
 /** The deployed Pinocchio burner program. Overridable for fork testing via
  * VITE_PROGRAM_ID (a fork deploy gets a fresh program id per bootstrap). */
 export const PROGRAM = new PublicKey(
-  env.VITE_PROGRAM_ID ?? "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV"
+  env.VITE_PROGRAM_ID ?? "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5"
 );
 
 /** `sha256("global:validate_config")[0..8]` — must match constants.rs. */

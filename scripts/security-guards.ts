@@ -77,7 +77,7 @@ import {
 const RPC_URL = process.env.SURFPOOL_RPC_URL ?? "http://127.0.0.1:8899";
 const JUPITER_API = process.env.JUPITER_API_URL ?? "https://api.jup.ag/swap/v2";
 const BURNER_PROGRAM = new PublicKey(
-  "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV"
+  "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5"
 );
 const BURNER_SO_PATH = "programs/burner/target/deploy/pinocchio_parity.so";
 const JUPITER_PROGRAM = new PublicKey(

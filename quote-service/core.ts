@@ -30,7 +30,7 @@ export const MAX_TRANSACTION_BYTES = 1232;
 export const MAX_ACCOUNT_LOCKS = 64;
 
 export const DEFAULT_BURNER_PROGRAM = new PublicKey(
-  "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV"
+  "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5"
 );
 export const JUPITER_PROGRAM = new PublicKey(
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"

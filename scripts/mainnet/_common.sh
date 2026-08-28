@@ -18,7 +18,7 @@ readonly SOURCE_REPO_URL="https://github.com/bropump/onchainburner"
 # Program identity and the wallet that pays + holds upgrade authority.
 # The program keypair is NOT the wallet: it only names the program id.
 # The wallet secret is pasted at the terminal, never echoed, never in argv.
-EXPECTED_PROGRAM_ID="${EXPECTED_PROGRAM_ID:-5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV}"
+EXPECTED_PROGRAM_ID="${EXPECTED_PROGRAM_ID:-burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5}"
 EXPECTED_UPGRADE_AUTHORITY="${EXPECTED_UPGRADE_AUTHORITY:-4YBssBchMLgRwD7rwP6jG1ubCX1V1zWwyF3tZGyPSpzJ}"
 PINNED_TOOLCHAIN="$REPO/tmp/toolchains/agave-4.0.0/bin"
 

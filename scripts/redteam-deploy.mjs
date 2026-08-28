@@ -28,6 +28,8 @@ const SO = process.argv[3] ?? "programs/burner/target/deploy/pinocchio_parity.so
 const KEYDIR = process.env.REDTEAM_KEYDIR ?? `${process.cwd()}/.ps-run/redteam-keys`;
 fs.mkdirSync(KEYDIR, { recursive: true });
 const OUT = `${KEYDIR}/redteam-prog-id.txt`;
+const PROGRAM_KEYPAIR =
+  process.env.PROGRAM_KEYPAIR ?? `${KEYDIR}/rt-program-keypair.json`;
 
 const LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 
@@ -39,12 +41,15 @@ const payer = Keypair.fromSecretKey(
 );
 
 let prog;
-const progKeyFile = `${KEYDIR}/rt-program-keypair.json`;
-if (fs.existsSync(progKeyFile)) {
-  prog = Keypair.fromSecretKey(new Uint8Array(JSON.parse(fs.readFileSync(progKeyFile))));
+if (fs.existsSync(PROGRAM_KEYPAIR)) {
+  prog = Keypair.fromSecretKey(
+    new Uint8Array(JSON.parse(fs.readFileSync(PROGRAM_KEYPAIR)))
+  );
+} else if (process.env.PROGRAM_KEYPAIR) {
+  throw new Error(`PROGRAM_KEYPAIR not found: ${PROGRAM_KEYPAIR}`);
 } else {
   prog = Keypair.generate();
-  fs.writeFileSync(progKeyFile, JSON.stringify(Array.from(prog.secretKey)));
+  fs.writeFileSync(PROGRAM_KEYPAIR, JSON.stringify(Array.from(prog.secretKey)));
 }
 const existing = await c.getAccountInfo(prog.publicKey);
 if (existing) {

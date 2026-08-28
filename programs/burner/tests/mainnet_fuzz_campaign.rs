@@ -33,7 +33,7 @@ use {
     std::{collections::BTreeMap, fs, path::PathBuf, str::FromStr},
 };
 
-const BURNER_PROGRAM: &str = "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV";
+const BURNER_PROGRAM: &str = "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5";
 const JUPITER_PROGRAM: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 const QUOTE_AUTHORITY: &str = "Afs7CEFqSHNXFo5r6XhUmGYAzhC7qnKKA1UPUMU8quz8";
 const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";

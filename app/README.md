@@ -1,7 +1,7 @@
 # Onchain Burner — frontend
 
 React + TanStack Router UI for the burner program
-(`5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV`).
+(`burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5`).
 
 This app builds and signs SETUP transactions with the user's wallet (launch,
 one-shot fee share, validate_config, ATA creation, funding). Burns are a

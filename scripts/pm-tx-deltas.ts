@@ -14,7 +14,7 @@ const LABELS: Record<string, string> = {
   MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e: "mayhem program",
   pUmPFn9WvfaN2WTVGnCEtJTd2ATTpvpsKRz6jVzu6u4: "agent-payments program",
   JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4: "jupiter v6",
-  "5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV": "burner program",
+  "burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5": "burner program",
 };
 
 async function main() {

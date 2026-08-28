@@ -8,7 +8,7 @@ bonding-curve buy) and atomically burns the configured target tokens.
 There is no quote authority and no Cloud KMS key. Anyone may build and submit
 a burn. Price protection is the on-chain reference-bound floor.
 
-- Program: `5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV`
+- Program: `burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5`
 - Framework: Pinocchio
 - Target: SBPFv3
 
@@ -45,7 +45,7 @@ The tree must be clean and match public `main` before deploy (and before
 publish). Place the production program keypair at
 `programs/burner/target/deploy/pinocchio_parity-keypair.json` first — it is
 gitignored and must already be program id
-`5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV`. Do not let the builder mint
+`burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5`. Do not let the builder mint
 a new one.
 
 Every network builds the same bytes. `PINOCCHIO_BUILD_NETWORK=mainnet` does

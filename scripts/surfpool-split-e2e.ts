@@ -38,7 +38,7 @@ import {
 const RPC_URL = process.env.SURFPOOL_RPC_URL ?? "http://127.0.0.1:8899";
 const JUPITER_API = process.env.JUPITER_API_URL ?? "https://api.jup.ag/swap/v2";
 
-const PROGRAM = new PublicKey("5kTgbKKDWTcyPoEp2S5Lunz1vsSLN92CzwNis4GQhnkV");
+const PROGRAM = new PublicKey("burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5");
 const JUPITER_PROGRAM = new PublicKey(
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 );
