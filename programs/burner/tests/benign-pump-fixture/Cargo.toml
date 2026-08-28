@@ -1,0 +1,29 @@
+# A benign no-op SBF program used exclusively by the directcurve Mollusk
+# regression. Mollusk installs this ELF at Pump.fun's real pinned program id
+# (and at the Pump fee program id, where it only needs to be executable) so the
+# directcurve buy CPI resolves to a program that returns Ok WITHOUT moving any
+# funds. That makes a fully-valid directcurve burn fail its exact lamport-delta
+# postcondition (6019) deterministically -- the "validation complete, CPI
+# reached and returned" sentinel -- and lets the harness read the emitted Pump
+# buy bytes out of Mollusk's inner-instruction trace. This ELF is never
+# deployed anywhere.
+[workspace]
+resolver = "2"
+
+[package]
+name = "benign-pump-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "benign_pump"
+
+[dependencies]
+pinocchio = { version = "=0.11.2", default-features = false, features = ["alloc"] }
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

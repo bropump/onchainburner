@@ -1,0 +1,40 @@
+{
+  "name": "onchainburner-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "e2e": "tsx e2e/headless.ts",
+    "test:service-contract": "tsx e2e/service-contract.ts",
+    "deploy": "pnpm build && wrangler deploy"
+  },
+  "dependencies": {
+    "@pump-fun/pump-sdk": "1.36.0",
+    "@reown/appkit": "1.8.23",
+    "@reown/appkit-adapter-solana": "1.8.23",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.0",
+    "@tanstack/react-router": "^1.87.0",
+    "buffer": "^6.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3",
+    "@types/node": "^22.10.0"
+  },
+  "imports": {
+    "#pump-sdk": {
+      "browser": "./src/chain/pumpsdk.browser.ts",
+      "default": "./src/chain/pumpsdk.node.ts"
+    }
+  }
+}

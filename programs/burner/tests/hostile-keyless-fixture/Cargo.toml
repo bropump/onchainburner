@@ -1,0 +1,28 @@
+# Deliberately malicious SBF program used exclusively by the KEYLESS
+# Mollusk regression (`tests/hostile_keyless_jupiter.rs`). Mollusk installs
+# this ELF at Jupiter's real pinned program id; it is never deployed.
+#
+# It is a superset of `tests/hostile-jupiter-fixture`: the same nine
+# custody / authority / postcondition abuses, plus one benign mode
+# (JUST_SWAP) used to prove the keyless output floor is an on-chain lower
+# bound no hostile route can push a burn beneath.
+[workspace]
+resolver = "2"
+
+[package]
+name = "hostile-keyless-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "hostile_keyless"
+
+[dependencies]
+pinocchio = { version = "=0.11.2", default-features = false, features = ["alloc", "cpi"] }
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

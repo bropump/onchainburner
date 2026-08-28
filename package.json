@@ -1,0 +1,82 @@
+{
+  "packageManager": "pnpm@10.28.2",
+  "license": "ISC",
+  "scripts": {
+    "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "build:pinocchio": "bash scripts/build-pinocchio.sh",
+    "build:pinocchio:mainnet": "PINOCCHIO_CARGO_BUILD_SBF=tmp/toolchains/agave-4.0.0/bin/cargo-build-sbf bash scripts/build-pinocchio.sh",
+    "deploy:mainnet": "bash scripts/mainnet/deploy.sh",
+    "deploy:mainnet:dry-run": "MAINNET_DEPLOY_DRY_RUN=1 bash scripts/mainnet/deploy.sh",
+    "verify:mainnet": "bash scripts/mainnet/verify.sh",
+    "verify:mainnet:publish": "bash scripts/mainnet/verify.sh --publish",
+    "revoke:mainnet": "bash scripts/mainnet/revoke.sh",
+    "deploy:pinocchio": "bash scripts/deploy-pinocchio.sh",
+    "verify:pinocchio": "node scripts/verify-pinocchio-deployment.cjs",
+    "check:production-wiring": "bash scripts/check-production-wiring.sh",
+    "typecheck:production": "tsc --noEmit --target ES2020 --module commonjs --moduleResolution node --esModuleInterop --types node scripts/security-guards.ts",
+    "ci:pinocchio": "pnpm run check:production-wiring && pnpm run typecheck:production && pnpm run build:pinocchio && pnpm run test:unit && pnpm run test:hostile-jupiter",
+    "test:security-guards": "npx tsx scripts/security-guards.ts",
+    "test:unit": "cd programs/burner && rustup run 1.89.0-sbpf-solana-v1.53 cargo test",
+    "fuzz": "bash scripts/fuzz-burner.sh",
+    "fuzz:host": "cd programs/burner && rustup run 1.89.0-sbpf-solana-v1.53 cargo test --lib -- fuzz",
+    "test:split": "npx tsx scripts/split-negative.ts && npx tsx scripts/split-permissionless.ts && npx tsx scripts/split-matrix.ts",
+    "test:negative": "npx tsx scripts/split-negative.ts",
+    "test:permissionless": "npx tsx scripts/split-permissionless.ts",
+    "test:matrix": "npx tsx scripts/split-matrix.ts",
+    "test:smoke": "npx tsx scripts/split-smoke.ts",
+    "test:shared": "npx tsx scripts/shared-route-adversarial.ts",
+    "test:vc": "npx tsx scripts/vc-validate-config.ts && npx tsx scripts/vc-consistency.ts",
+    "test:atomicity": "npx tsx scripts/e2e-atomicity.ts",
+    "test:admission": "npx tsx scripts/e2e-admission-onchain.ts",
+    "test:mainnet-sim": "npx tsx scripts/split-mainnet-sim.ts",
+    "test:hostile-jupiter": "bash scripts/test-mollusk-hostile-jupiter.sh",
+    "test:6018": "npx tsx scripts/e2e-6018-cashback-retry.ts",
+    "triage": "bash scripts/triage.sh",
+    "test:guards": "pnpm run test:security-guards",
+    "typecheck:quote-service": "tsc --noEmit --target ES2020 --module commonjs --moduleResolution node --esModuleInterop --types node,mocha,chai quote-service/core.ts quote-service/reference.ts quote-service/markets.ts quote-service/adapters.ts quote-service/cli.ts quote-service/server.ts quote-service/core.test.ts quote-service/reference.test.ts quote-service/server.test.ts quote-service/adapters.test.ts quote-service/directcurve.test.ts quote-service/markets.test.ts",
+    "test:quote-service": "TS_NODE_TRANSPILE_ONLY=1 mocha -r ts-node/register -t 20000 quote-service/core.test.ts quote-service/reference.test.ts quote-service/server.test.ts quote-service/adapters.test.ts quote-service/directcurve.test.ts quote-service/markets.test.ts",
+    "test:redteam-followup": "npx tsx scripts/redteam-followup.ts",
+    "test:hostile-jupiter-fuzz": "HOSTILE_FUZZ_ITERS=${HOSTILE_FUZZ_ITERS:-3000} rustup run 1.89.0-sbpf-solana-v1.53 cargo test --manifest-path programs/burner/Cargo.toml --test hostile_keyless_jupiter keyless_hostile_jupiter_fuzz -- --ignored --nocapture",
+    "serve:quote-service": "npx tsx quote-service/server.ts",
+    "build:quote-service": "tsc -p tsconfig.quote-service.json",
+    "test:service-fork": "npx tsx scripts/keyless-service-fork-burn.ts"
+  },
+  "dependencies": {
+    "@irys/upload": "0.0.15",
+    "@irys/upload-solana": "0.1.8",
+    "@pump-fun/pump-sdk": "^1.36.0",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.98.4",
+    "bn.js": "^5.2.2"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.0",
+    "@types/chai": "^4.3.0",
+    "@types/mocha": "^9.0.0",
+    "@types/node": "^22.20.1",
+    "chai": "^4.3.4",
+    "mocha": "^9.0.3",
+    "prettier": "^2.6.2",
+    "ts-node": "10.9.2",
+    "typescript": "^5.7.3"
+  },
+  "name": "onchainburner",
+  "version": "1.0.0",
+  "description": "An immutable Solana burner vault. A vault's configuration is its PDA address: there is no configuration account, update instruction, or withdrawal path. The production program converts vault SOL through Jupiter and atomically burns the configured target tokens.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bropump/onchainburner.git"
+  },
+  "keywords": [],
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/bropump/onchainburner/issues"
+  },
+  "homepage": "https://github.com/bropump/onchainburner#readme"
+}

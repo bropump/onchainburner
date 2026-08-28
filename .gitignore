@@ -1,0 +1,48 @@
+node_modules/
+target/
+tmp/
+.anchor/
+test-ledger/
+**/*.rs.bk
+# Program keypairs are production secrets and must live in secure custody,
+# never in the repo. See CLAUDE.md on the program-id decision.
+**/*-keypair.json
+.keys/
+
+# Local Surfpool fork logs: pure local noise, and they have contained
+# ephemeral fork keypairs in the past. Never publish these.
+.surfpool/
+.qs-audit-tmp/
+.qs-verify/
+app/dist/
+dist/
+app/node_modules/
+.codex/
+.claude/
+
+# Product-sanity run state: fork payer keypair + deployed program id.
+# Never publish (fork keys), but must outlive the session that created it.
+.ps-run/
+
+# Fork payer keypairs. Two of these reached a PUBLIC repo via
+# evidence/*/run/payer.json because the rule below only matched
+# `*-keypair.json`. Both held 0 SOL so nothing was lost, but the next one
+# might not. Match the FILE SHAPE, not one naming convention.
+**/payer.json
+**/*payer*.json
+**/run/*.json
+
+# Secrets. `app/.env.local` was TRACKED until 2026-08-28 -- harmless then (localhost
+# URLs, a public program id) but it meant the first real secret added to an env file
+# would have been committed to a PUBLIC repo on the next `git add`. Two fork keypairs
+# already reached this repo that way via evidence/*/run/payer.json.
+#
+# `.env.example` is deliberately still committed: it documents the NAMES without the
+# values, which is what a new machine needs.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+prototypes/

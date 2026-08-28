@@ -1,0 +1,9 @@
+# Cloudflare Pages SPA fallback.
+#
+# TanStack Router does routing in the browser, so Pages must serve index.html
+# for any path it has no file for -- otherwise a REFRESH or a shared deep link
+# 404s. That covers /launch, /existing, and every /vault?launch=... link the
+# overview page emits, which are exactly the URLs people paste to each other.
+#
+# 200 (rewrite), not 302: the URL must stay as typed so the router can read it.
+/*    /index.html   200

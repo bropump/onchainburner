@@ -1,0 +1,36 @@
+################################################################
+# Deploy the production Pinocchio burner artifact.
+# Build first with scripts/build-pinocchio.sh. This native artifact is the only
+# deployment source.
+################################################################
+
+addon "svm" {
+    rpc_api_url = input.rpc_api_url
+    network_id = input.network_id
+}
+
+variable "pinocchio_program" {
+    value = svm::get_program_from_native_project(
+        "pinocchio_parity",
+        "programs/burner/target/deploy/pinocchio_parity-keypair.json",
+        null,
+        "programs/burner/target/deploy/pinocchio_parity.so"
+    )
+}
+
+action "deploy_pinocchio_burner" "svm::deploy_program" {
+    description = "Deploy the production Pinocchio burner program"
+    program = variable.pinocchio_program
+    authority = signer.authority
+    payer = signer.payer
+    // Rehearsals exercise the same loader path as devnet/mainnet.
+    instant_surfnet_deployment = false
+}
+
+output "program_id" {
+    value = action.deploy_pinocchio_burner.program_id
+}
+
+output "deployment_slot" {
+    value = action.deploy_pinocchio_burner.slot
+}

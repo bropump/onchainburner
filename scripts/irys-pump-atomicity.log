@@ -1,0 +1,181 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+npm warn exec The following package was not found and will be installed: tsx@4.23.12
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+A0  fork health=ok slot=442346988 payerLamports=9601098550969
+B0  GET https://uploader.irys.xyz/info status=200 solana=9NERQjLetzquGwdKt3X4gZ8fE8fPfSkj2xo2esmUjWsz
+B0  GET https://node1.irys.xyz/info status=200 solana=5z2wM2R5QQ3qbg2Wtt8zX77BPrRsDaZueb1kLdidzKZE
+B1  getAccountInfo 9NERQjLetzquGwdKt3X4gZ8fE8fPfSkj2xo2esmUjWsz owner=11111111111111111111111111111111 executable=false dataLen=0 lamports=81006278360
+B1  getAccountInfo 5z2wM2R5QQ3qbg2Wtt8zX77BPrRsDaZueb1kLdidzKZE owner=11111111111111111111111111111111 executable=false dataLen=0 lamports=143865995838
+B2  Irys SOL recipients executable on fork? false (measured: they are System-owned wallets, not an upload program)
+B3  Pump program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P executable=true owner=BPFLoaderUpgradeab1e11111111111111111111111
+B4  POST https://uploader.irys.xyz/tx/solana status=400 body=Invalid DataItem error=
+A1  create_v2 program=6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P dataLen=120 disc=d6904cec5f8b31b4 discMatchesIdl=true
+A2  URI bytes in instruction data BEFORE submit: offset=41 (measured, not inferred)
+A3  create_v2 LANDED sig=35tK8RMRgSmEXN6ZLNfA3jmEbCjxLGQz8psTrvBDs6vQeYHzFmsjQFZcsPbDuwp6Fxbk1bPpnmamp6AWyVH3rKtr mint=GmMqR1Ur3HPC4bvU6fxnjMCTW4pCPMUDdv5XwB3M7Rzc mintOwner=TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb mintLamports=5000000
+A4  GET dummy URI after create: status=404 (mint exists regardless)
+C1  one tx ix programs (plus compute budget inside sendInstructions): 11111111111111111111111111111111 + 11111111111111111111111111111111 + 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+C2  LANDED sig=4kLJsrqh65t9rkj2RNxfEvSS9e4B42PX2rGoAJRZ1QVqZUDjJFBCbZgvYq2tsoPjfvzWX64Xz27MLyBdxSDcFeYr mint=2AtmLyK97sMTQzkFrQqPw1JWx4EvSfxbsyp8XT6HWxkB
+C3  Irys recipient fork balance 81006278360 -> 81006288360 (delta 10000, want +10000)
+C4  landed ix programs: [{"program":"ComputeBudget111111111111111111111111111111","dataLen":5},{"program":"11111111111111111111111111111111","dataLen":12},{"program":"11111111111111111111111111111111","dataLen":12},{"program":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P","dataLen":120}]
+C5  GET https://example.com/irys-atomicity-proof.json after atomic pay+create: status=404 body=<!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" c…
+D1  GET Irys balance (uploader) status=200 body={"balance":"0"}
+D2  POST Irys credit with FORK sig status=400 body=Confirmed tx not found error=
+D3  GET Irys balance after credit-attempt status=200 body={"balance":"0"}
+D4  GET Irys balance (node1) status=200 body={"balance":"0"}
+E1  predicted gateway URL (sha256 of JSON, NOT a signed data-item id) https://gateway.irys.xyz/x2L8zlDiHQys62EFMYaS9bXkMGVz10St3KdMqQnXyHg
+E2  GET predicted URL status=404 (no POST was sent to Irys)
+
+==== VERDICT ====
+{
+  "createV2Landed": true,
+  "irysUploadInSameSolanaTx": false,
+  "irysUploadReason": "Upload is HTTP POST to an Irys bundler (/tx/solana). No Irys program id, no upload instruction. create_v2 already contains the URI bytes before submit.",
+  "irysPaymentInSameSolanaTx": true,
+  "irysPaymentReason": "SystemProgram.transfer to the bundler's SOL address + create_v2 landed in one fork tx. That pays an address; it does not upload metadata.",
+  "irysAcceptsSurfpoolPayment": false,
+  "irysAcceptsReason": "Irys balance GET and credit-POST of the fork signature do not credit the payer. Bundlers watch their own network (mainnet), not Surfpool.",
+  "safeUserFlow": "HTTP upload must succeed first (wallet message-sign of the data item + POST), then a second sign for create_v2. Two signs. Not one Solana transaction."
+}
+
+==== FULL REPORT ====
+{
+  "rpc": "http://127.0.0.1:9900",
+  "payer": "B7B5PDeND8FX1LBFuvB5L5HxsrtLiTn6EQSQJC8fBx1N",
+  "dummyUri": "https://example.com/irys-atomicity-proof.json",
+  "fork": {
+    "health": "ok",
+    "slot": 442346988,
+    "payerLamports": 9601098550969
+  },
+  "irysInfo": {
+    "uploader": {
+      "url": "https://uploader.irys.xyz/info",
+      "status": 200,
+      "body": "{\"version\":\"0.2.0\",\"addresses\":{\"ethereum\":\"0x32Ed3Dc90CD5AE7b875A0ee7A86CA6D2fc72c635\",\"matic\":\"0x32Ed3Dc90CD5AE7b875A0ee7A86CA6D2fc72c635\",\"bnb\":\"0x32Ed3Dc90CD5AE7b875A0ee7A86CA6D2fc72c635\",\"avalanche\":\"0x32Ed3Dc90CD5AE7b875A0ee7A86CA6D2fc72c635\",\"solana\":\"9NERQjLetzquGwdKt3X4gZ8fE8fPfSkj2xo2esmUjWsz\",\"arbitrum\":\"0x32Ed3Dc90CD5AE7b875A0ee7A86CA6D2fc72c635\",\"aptos\":\"0x1db554ae2128ff6534789837311bcfaa5c218ab0e5e6247ec1d112f358030442\",\"base-eth\":\"0x32Ed3Dc90CD5AE7b875A0ee7A86CA6D2fc72c635\",\"usdc-…"
+    },
+    "node1": {
+      "url": "https://node1.irys.xyz/info",
+      "status": 200,
+      "body": "{\"version\":\"0.2.0\",\"addresses\":{\"arweave\":\"6DTqSgzXVErOuLhaP0fmAjqF4yzXkvth58asTxP3pNw\",\"ethereum\":\"0x62459D34409ABA55b85DD28284cc4e57e0C8ADea\",\"matic\":\"0x62459D34409ABA55b85DD28284cc4e57e0C8ADea\",\"bnb\":\"0x62459D34409ABA55b85DD28284cc4e57e0C8ADea\",\"avalanche\":\"0x62459D34409ABA55b85DD28284cc4e57e0C8ADea\",\"solana\":\"5z2wM2R5QQ3qbg2Wtt8zX77BPrRsDaZueb1kLdidzKZE\",\"arbitrum\":\"0x62459D34409ABA55b85DD28284cc4e57e0C8ADea\",\"fantom\":\"0x62459D34409ABA55b85DD28284cc4e57e0C8ADea\",\"algorand\":\"VNKRP6AUOETTMGY3L…"
+    }
+  },
+  "irysAccountFacts": [
+    {
+      "address": "9NERQjLetzquGwdKt3X4gZ8fE8fPfSkj2xo2esmUjWsz",
+      "exists": true,
+      "owner": "11111111111111111111111111111111",
+      "executable": false,
+      "lamports": 81006278360,
+      "dataLen": 0
+    },
+    {
+      "address": "5z2wM2R5QQ3qbg2Wtt8zX77BPrRsDaZueb1kLdidzKZE",
+      "exists": true,
+      "owner": "11111111111111111111111111111111",
+      "executable": false,
+      "lamports": 143865995838,
+      "dataLen": 0
+    }
+  ],
+  "pumpProgram": {
+    "executable": true,
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "dataLen": 36
+  },
+  "irysUploadPostGarbage": {
+    "url": "https://uploader.irys.xyz/tx/solana",
+    "status": 400,
+    "body": "Invalid DataItem"
+  },
+  "A": {
+    "signature": "35tK8RMRgSmEXN6ZLNfA3jmEbCjxLGQz8psTrvBDs6vQeYHzFmsjQFZcsPbDuwp6Fxbk1bPpnmamp6AWyVH3rKtr",
+    "mint": "GmMqR1Ur3HPC4bvU6fxnjMCTW4pCPMUDdv5XwB3M7Rzc",
+    "uri": "https://example.com/irys-atomicity-proof.json",
+    "uriByteOffset": 41,
+    "dataLen": 120,
+    "discMatchesIdl": true,
+    "mintOwner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "mintExists": true,
+    "dummyUriGet": {
+      "url": "https://example.com/irys-atomicity-proof.json",
+      "status": 404,
+      "body": "<!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.o…"
+    }
+  },
+  "C": {
+    "signature": "4kLJsrqh65t9rkj2RNxfEvSS9e4B42PX2rGoAJRZ1QVqZUDjJFBCbZgvYq2tsoPjfvzWX64Xz27MLyBdxSDcFeYr",
+    "mint": "2AtmLyK97sMTQzkFrQqPw1JWx4EvSfxbsyp8XT6HWxkB",
+    "uri": "https://example.com/irys-atomicity-proof.json",
+    "irysRecipient": "9NERQjLetzquGwdKt3X4gZ8fE8fPfSkj2xo2esmUjWsz",
+    "irysBefore": 81006278360,
+    "irysAfter": 81006288360,
+    "delta": 10000,
+    "mintExists": true,
+    "mintOwner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "landedPrograms": [
+      {
+        "program": "ComputeBudget111111111111111111111111111111",
+        "dataLen": 5
+      },
+      {
+        "program": "11111111111111111111111111111111",
+        "dataLen": 12
+      },
+      {
+        "program": "11111111111111111111111111111111",
+        "dataLen": 12
+      },
+      {
+        "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+        "dataLen": 120
+      }
+    ],
+    "dummyUriGet": {
+      "url": "https://example.com/irys-atomicity-proof.json",
+      "status": 404,
+      "body": "<!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.o…"
+    }
+  },
+  "D": {
+    "balanceBeforeCredit": {
+      "url": "https://uploader.irys.xyz/account/balance/solana?address=B7B5PDeND8FX1LBFuvB5L5HxsrtLiTn6EQSQJC8fBx1N",
+      "status": 200,
+      "body": "{\"balance\":\"0\"}"
+    },
+    "creditForkTx": {
+      "url": "https://uploader.irys.xyz/account/balance/solana",
+      "status": 400,
+      "body": "Confirmed tx not found"
+    },
+    "balanceAfterCredit": {
+      "url": "https://uploader.irys.xyz/account/balance/solana?address=B7B5PDeND8FX1LBFuvB5L5HxsrtLiTn6EQSQJC8fBx1N",
+      "status": 200,
+      "body": "{\"balance\":\"0\"}"
+    },
+    "node1Balance": {
+      "url": "https://node1.irys.xyz/account/balance/solana?address=B7B5PDeND8FX1LBFuvB5L5HxsrtLiTn6EQSQJC8fBx1N",
+      "status": 200,
+      "body": "{\"balance\":\"0\"}"
+    }
+  },
+  "E": {
+    "predicted": "https://gateway.irys.xyz/x2L8zlDiHQys62EFMYaS9bXkMGVz10St3KdMqQnXyHg",
+    "note": "A real Irys data-item id is known after signing the data item, before POST. This script did not sign a data item and did not POST to Irys mainnet. Even a correctly predicted https://gateway.irys.xyz/<id> baked into create_v2 does not upload the bytes; a failed POST leaves a mint with a dead URI.",
+    "predictedGet": {
+      "url": "https://gateway.irys.xyz/x2L8zlDiHQys62EFMYaS9bXkMGVz10St3KdMqQnXyHg",
+      "status": 404,
+      "body": ""
+    },
+    "postedToIrysMainnet": false
+  },
+  "verdict": {
+    "createV2Landed": true,
+    "irysUploadInSameSolanaTx": false,
+    "irysUploadReason": "Upload is HTTP POST to an Irys bundler (/tx/solana). No Irys program id, no upload instruction. create_v2 already contains the URI bytes before submit.",
+    "irysPaymentInSameSolanaTx": true,
+    "irysPaymentReason": "SystemProgram.transfer to the bundler's SOL address + create_v2 landed in one fork tx. That pays an address; it does not upload metadata.",
+    "irysAcceptsSurfpoolPayment": false,
+    "irysAcceptsReason": "Irys balance GET and credit-POST of the fork signature do not credit the payer. Bundlers watch their own network (mainnet), not Surfpool.",
+    "safeUserFlow": "HTTP upload must succeed first (wallet message-sign of the data item + POST), then a second sign for create_v2. Two signs. Not one Solana transaction."
+  }
+}

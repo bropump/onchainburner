@@ -1,0 +1,88 @@
+/**
+ * Historical burn-proven pools from the 2026-08-26 fork campaign. Documentation
+ * / offline tooling only — NOT the live pick (OWNER 2026-08-28). Interactive
+ * discovery uses `selectReference` (GPA + `rankCandidates`). `$PUMP` has a
+ * real bonding curve, so live pick is the Pump venue, not the CLMM below.
+ *
+ * Every pool below landed real keyless burns as the bound reference on the
+ * 2026-08-26 fork campaign
+ * (prototypes/switchboard-stateless-surfpool/evidence/deploy-verify-20260826/
+ * tm-matrix-v3-results.jsonl). A table entry is a hint, never a trust
+ * assumption and never an override of live enumeration.
+ */
+
+export type KnownReference = {
+  symbol: string;
+  /** "pump" = the Pump venue (curve / canonical PumpSwap pool), derived. */
+  pool: string | "pump";
+  venue: string;
+  pickedAt: string;
+  reason: string;
+};
+
+export const KNOWN_REFERENCES: Record<string, KnownReference> = {
+  jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL: {
+    symbol: "JTO",
+    pool: "JVoPtWWDsRcLvQosu5fWc2CaNF6jEtJzbxdPtcEuvZo",
+    venue: "Raydium CLMM",
+    pickedAt: "2026-08-26",
+    reason:
+      "JTO's main SOL market (~142 SOL deep, the deepest of 25 found) and burn-proven today; position-based depth, so the margin over the 50 SOL gate is the protection",
+  },
+  CTg3ZgYx79zrE1MteDVkmkcGniiFrK1hJ6yiabropump: {
+    symbol: "NEIRO",
+    pool: "HvAqakZgurMR2br1eGWPU6EeFcxzmeW8n6Mn7ejEf3DV",
+    venue: "Raydium v4",
+    pickedAt: "2026-08-26",
+    reason:
+      "burn-proven; 1,362.6 of 1,363.7 SOL cannot be withdrawn (99.92% of LP burned) — clears the 50 SOL gate on locked depth alone",
+  },
+  pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn: {
+    symbol: "$PUMP",
+    pool: "HbjYfcWZBjCBYTJpZkLGxqArVmZVu3mQcRudb6Wg1sVh",
+    venue: "Meteora DLMM",
+    pickedAt: "2026-08-28",
+    reason:
+      "deepest SOL-quoted market the program can price: 11,617 SOL vs 4,476 for the Raydium CLMM it replaced (2026-08-28 enumeration, 89 candidates). NO $PUMP pool has locked depth clearing the 50 SOL gate -- every candidate is transient-positions -- so durability cannot be the tiebreak here and depth is what remains: 232x the gate rather than 89x. Existing $PUMP vaults stay bound to 45ssPkUQ...; this only changes new ones. Do NOT point this at the Pump venue: $PUMP graduated, has no live bonding curve, and the service answers 422 (tried 2026-08-28, hung the UI). Orca is deeper still on SOL but the program cannot read Whirlpool layouts.",
+  },
+  DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263: {
+    symbol: "BONK",
+    pool: "GtKKKs3yaPdHbQd2aZS4SfWhy8zQ988BJGnKNndLxYsN",
+    venue: "Raydium CLMM",
+    pickedAt: "2026-08-26",
+    reason:
+      "burn-proven BONK/SOL market from today's campaign; position-based depth — verified live against the 50 SOL gate before every setup",
+  },
+  EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm: {
+    symbol: "WIF",
+    pool: "EP2ib6dYdEeqD8MfE2ezHCxX3kP3K2eLKkirfPm5eyMx",
+    venue: "Raydium v4",
+    pickedAt: "2026-08-26",
+    reason:
+      "burn-proven, and the pool Jupiter routes through: 28,242 SOL deep with 99.65% of LP burned/locked",
+  },
+  "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump": {
+    symbol: "FARTCOIN",
+    pool: "Bzc9NZfMqkXR6fz1DBph7BDf9BroyEf6pnzESP7v5iiw",
+    venue: "Raydium v4",
+    pickedAt: "2026-08-26",
+    reason:
+      "burn-proven, and the pool Jupiter routes through: 43,444 SOL deep with 99.77% of LP burned/locked",
+  },
+  "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr": {
+    symbol: "POPCAT",
+    pool: "FRhB8L7Y9Qq41qZXYLtC2nw8An1RJfLLxRF2x9RwLLMo",
+    venue: "Raydium v4",
+    pickedAt: "2026-08-26",
+    reason:
+      "burn-proven POPCAT/SOL v4 market from today's campaign; LP-lock share and depth verified live before every setup",
+  },
+  "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": {
+    symbol: "RAY",
+    pool: "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",
+    venue: "Raydium v4",
+    pickedAt: "2026-08-26",
+    reason:
+      "burn-proven canonical SOL/RAY v4 market from today's campaign; LP-lock share and depth verified live before every setup",
+  },
+};

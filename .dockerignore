@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!package.json
+!pnpm-lock.yaml
+!tsconfig.quote-service.json
+!quote-service/
+!quote-service/**/*.ts

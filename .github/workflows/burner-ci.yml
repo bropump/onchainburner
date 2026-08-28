@@ -1,0 +1,292 @@
+# Burner CI: rebuild the SBPFv3 artifact from source with the pinned
+# toolchain, then run the FULL host test suite against the bytes just built.
+# This is FABLE-PATH-TO-SHIP step 2 ("CI: rebuild-from-source + re-run on
+# every commit").
+#
+# READ THIS BEFORE "SIMPLIFYING" ANYTHING. This repo has produced five
+# distinct shapes of tests that looked green while proving nothing:
+#   1. artifact/fuzz suites #[ignore] themselves, so a bare `cargo test`
+#      reports clean while running fewer than half the tests
+#      -> `--include-ignored` is load-bearing, and
+#         scripts/ci/assert-test-counts.mjs fails the job if ANY test is
+#         still reported ignored, so removing the flag turns the job red.
+#   2. suites whose artifact_path() PREFERS a stale
+#      target/deploy/pinocchio_parity_keyless.so (a KMS-era build that can no
+#      longer be produced from source) over the fresh artifact
+#      -> every artifact env var is pinned to the just-built .so, and the
+#         stale-artifact guard purges/refuses prebuilt .so files under
+#         programs/burner/** before the build.
+#   3-5. retry ladders, `code == undefined` acceptance, dead canaries
+#      -> the count arbiter (assert-test-counts.mjs) decides pass/fail from
+#         parsed per-binary results, never from a blanket exit code.
+#
+# WHAT THIS JOB DELIBERATELY DOES NOT COVER:
+#   - The Surfpool fork suites (split-negative, security-guards, e2e-*,
+#     pm-*, vc-*). They need a live mainnet fork plus the public Jupiter
+#     API; CLAUDE.md records that fork measurements are INVALID without
+#     FORK_DEX_PROFILE=pool and that a stale fork drifts into false
+#     failures. Do not assume fork coverage exists because this job is
+#     green.
+#   - The live layout-drift sentinel (venue_offset_oracle::
+#     live_layout_drift_sentinel) prints a skip and PASSES without
+#     KEYLESS_DRIFT_RPC. CI does not set it (no network dependency), so
+#     this job provides NO venue-drift coverage. The frozen venue fixtures
+#     are still fully exercised.
+#
+# FUZZ SCALE, so a CI run is never mistaken for a recorded long campaign:
+#   No *_ITERS variables are set. Every fuzz suite therefore runs its
+#   in-file quick-campaign DEFAULT (e.g. KEYLESS_FUZZ_ITERS=40000/campaign,
+#   CD_FUZZ_ITERS=20000, BURNER_FUZZ_ITERS=5000-20000, proptest 256-8192
+#   cases). The recorded long campaigns (100k-500k iters) are separate,
+#   labeled runs; this job's summary says "quick campaign defaults" on
+#   every run. BURNER_FUZZ_SEED is pinned below so a red run is
+#   reproducible locally; mainnet_fuzz_campaign otherwise seeds from the
+#   clock.
+
+name: burner-ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: burner-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # `shell: bash` (as opposed to the implicit default) runs with
+    # `-o pipefail`, which the `| tee` pipelines below rely on.
+    shell: bash
+
+env:
+  AGAVE_VERSION: "4.0.0"
+  PLATFORM_TOOLS: "v1.53"
+  # The rustup toolchain name cargo-build-sbf 4.0.0 registers for
+  # platform-tools v1.53; package.json's test:unit uses the same name.
+  SBPF_RUST_TOOLCHAIN: "1.89.0-sbpf-solana-v1.53"
+  # Floor for total passed tests across non-quarantined binaries, measured
+  # 2026-08-26 against the keyless-only build: 149 passed / 0 failed /
+  # 0 ignored (the earlier "160" baseline included 11 directcurve_artifact
+  # tests that silently ran against a stale, no-longer-buildable KMS-era
+  # .so; those are quarantined -- see scripts/ci/assert-test-counts.mjs).
+  # RAISE this when adding tests. Lowering it requires a written reason in
+  # the same commit.
+  MIN_EXECUTED_TESTS: "160"
+
+jobs:
+  rebuild-and-test:
+    runs-on: ubuntu-24.04 # x86_64; toolchain asset names below assume it
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # platform-tools v1.53 is a ~1.3 GB install that cargo-build-sbf
+      # downloads on first use; the agave release tarball is a few hundred
+      # MB. Both are version-pinned, so the cache key never goes stale.
+      - name: Cache pinned toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/agave-toolchain
+            ~/.cache/solana
+          key: agave-${{ env.AGAVE_VERSION }}-platform-tools-${{ env.PLATFORM_TOOLS }}-linux-x86_64
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('programs/burner/Cargo.lock') }}
+          restore-keys: cargo-registry-
+
+      # The pinned toolchain is installed to a private directory and is
+      # DELIBERATELY NOT put on PATH: scripts take the
+      # PINOCCHIO_CARGO_BUILD_SBF override, so nothing can silently fall
+      # back to whatever cargo-build-sbf happens to be on PATH. The version
+      # assertion here fails loudly, and scripts/build-pinocchio.sh
+      # independently re-asserts the same version, so a wrong toolchain
+      # cannot produce a green build.
+      - name: Install pinned Agave toolchain (cargo-build-sbf 4.0.0)
+        run: |
+          set -euo pipefail
+          TOOLDIR="$HOME/agave-toolchain/${AGAVE_VERSION}"
+          BSBF="$TOOLDIR/bin/cargo-build-sbf"
+          if [[ ! -x "$BSBF" ]]; then
+            mkdir -p "$TOOLDIR"
+            curl -fL --retry 3 -o /tmp/solana-release.tar.bz2 \
+              "https://github.com/anza-xyz/agave/releases/download/v${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+            tar -xjf /tmp/solana-release.tar.bz2 -C "$TOOLDIR" --strip-components=1
+          fi
+          version_output="$("$BSBF" --version)"
+          echo "$version_output"
+          grep -qx "cargo-build-sbf ${AGAVE_VERSION}" <<<"$version_output" \
+            || { echo "error: expected cargo-build-sbf ${AGAVE_VERSION}" >&2; exit 1; }
+          grep -qx "platform-tools ${PLATFORM_TOOLS}" <<<"$version_output" \
+            || { echo "error: expected default platform-tools ${PLATFORM_TOOLS}" >&2; exit 1; }
+          echo "PINOCCHIO_CARGO_BUILD_SBF=$BSBF" >> "$GITHUB_ENV"
+
+      # Failure-mode-2 guard: several suites PREFER a stale prebuilt .so
+      # (pinocchio_parity_keyless.so / pinocchio_parity_directcurve.so /
+      # pinocchio_parity_keyless_directcurve.so) over the fresh artifact
+      # when one exists on disk. A fresh checkout has none; this makes that
+      # assumption explicit and survives any future target/ caching.
+      - name: Guard against stale prebuilt artifacts
+        run: |
+          set -euo pipefail
+          if git ls-files -- 'programs/burner/**/*.so' | grep .; then
+            echo "error: prebuilt .so files are checked in under programs/burner/ -- the suites must only ever see bytes built by this job" >&2
+            exit 1
+          fi
+          rm -rf programs/burner/target/deploy programs/burner/tests/*/target/deploy
+
+      # scripts/build-pinocchio.sh itself asserts, failing closed:
+      # cargo-build-sbf 4.0.0, --arch v3, --tools-version v1.53, --locked,
+      # and ELF e_flags == 3 (SBPFv3). The sha256 is RECORDED, not gated:
+      # source changes legitimately change it; a human compares it against
+      # the recorded release hashes.
+      - name: Rebuild artifact from source (SBPFv3)
+        id: build
+        run: |
+          set -euo pipefail
+          bash scripts/build-pinocchio.sh | tee build-pinocchio.log
+          sha="$(grep '^SHA-256:' build-pinocchio.log | awk '{print $2}')"
+          [[ -n "$sha" ]] || { echo "error: no SHA-256 line in build output" >&2; exit 1; }
+          echo "artifact-sha256=$sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Artifact"
+            echo '`programs/burner/target/deploy/pinocchio_parity.so`'
+            echo "- SBPF: v3 (ELF e_flags=3, asserted by build script)"
+            echo "- sha256: \`$sha\`  (recorded for human comparison, NOT a gate)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # cargo-build-sbf registers the platform-tools rust as a rustup
+      # toolchain during the build; the explicit link below covers the
+      # cache-restored case where the install step was skipped.
+      - name: Ensure sbpf rustup toolchain is registered
+        run: |
+          set -euo pipefail
+          if ! rustup toolchain list | grep -q "${SBPF_RUST_TOOLCHAIN}"; then
+            rustup toolchain link "${SBPF_RUST_TOOLCHAIN}" \
+              "$HOME/.cache/solana/${PLATFORM_TOOLS}/platform-tools/rust"
+          fi
+          rustup run "${SBPF_RUST_TOOLCHAIN}" rustc --version
+
+      # Both fixture programs are REAL SBPF programs the hostile/directcurve
+      # suites install at pinned program ids; their .so files are gitignored
+      # and must be rebuilt here with the same pinned toolchain.
+      - name: Build test fixture programs (hostile Jupiter, benign Pump)
+        run: |
+          set -euo pipefail
+          for fixture in hostile-keyless-fixture benign-pump-fixture; do
+            "$PINOCCHIO_CARGO_BUILD_SBF" \
+              --arch v3 --tools-version "${PLATFORM_TOOLS}" \
+              --manifest-path "programs/burner/tests/${fixture}/Cargo.toml" \
+              --sbf-out-dir "programs/burner/tests/${fixture}/target/deploy"
+          done
+          for so in \
+            programs/burner/tests/hostile-keyless-fixture/target/deploy/hostile_keyless.so \
+            programs/burner/tests/benign-pump-fixture/target/deploy/benign_pump.so; do
+            [[ -s "$so" ]] || { echo "error: fixture not produced: $so" >&2; exit 1; }
+            flags="$(od -An -t u4 -j 48 -N 4 "$so" | tr -d '[:space:]')"
+            [[ "$flags" == "3" ]] || { echo "error: $so is not SBPFv3 (flags=$flags)" >&2; exit 1; }
+          done
+
+      # THE FULL SUITE. Both of these are load-bearing; do not tidy either:
+      #   --include-ignored  runs the #[ignore]-gated artifact/fuzz suites
+      #                      (more than half the real coverage). Its absence
+      #                      is caught by the count arbiter (ignored > 0).
+      #   BURNER_KEYLESS_ELF (and the sibling pins) force every suite onto
+      #                      the bytes built two steps ago, overriding the
+      #                      stale-preferring artifact_path() fallbacks.
+      # The other pins, suite by suite:
+      #   BURNER_DIRECTCURVE_ELF          directcurve_artifact (quarantined)
+      #   BURNER_KEYLESS_DIRECTCURVE_ELF  keyless_split_curve_fuzz,
+      #                                   split_curve_artifact
+      #   BURNER_ARTIFACT_OVERRIDE        mainnet_fuzz_campaign
+      #   HOSTILE_KEYLESS_ELF             hostile_* + mollusk_hostile_jupiter
+      #   BENIGN_PUMP_ELF                 directcurve/split-curve suites
+      # BURNER_FUZZ_SEED is pinned so a red run reproduces locally
+      # (mainnet_fuzz_campaign otherwise seeds from the clock). RUST_LOG=off
+      # because the fuzz campaigns execute tens of thousands of failing
+      # instructions on purpose and per-instruction DEBUG logs swamp the
+      # output the count parser and a human both need.
+      # cargo's own exit code is captured but NOT trusted as the verdict:
+      # the quarantined expected-fail binary makes it nonzero by design.
+      # scripts/ci/assert-test-counts.mjs is the arbiter.
+      - name: Run full test suite against the just-built artifact
+        run: |
+          set -uo pipefail
+          ART="$PWD/programs/burner/target/deploy/pinocchio_parity.so"
+          # set +e: GitHub's `shell: bash` runs with -e, and the quarantined
+          # expected-fail binary makes cargo's exit nonzero BY DESIGN; the
+          # arbiter step below must still run and is the real verdict.
+          set +e
+          env \
+            BURNER_KEYLESS_ELF="$ART" \
+            BURNER_DIRECTCURVE_ELF="$ART" \
+            BURNER_KEYLESS_DIRECTCURVE_ELF="$ART" \
+            BURNER_ARTIFACT_OVERRIDE="$ART" \
+            HOSTILE_KEYLESS_ELF="$PWD/programs/burner/tests/hostile-keyless-fixture/target/deploy/hostile_keyless.so" \
+            BENIGN_PUMP_ELF="$PWD/programs/burner/tests/benign-pump-fixture/target/deploy/benign_pump.so" \
+            BURNER_FUZZ_SEED=20260826 \
+            RUST_LOG=off \
+            rustup run "${SBPF_RUST_TOOLCHAIN}" cargo test \
+              --manifest-path programs/burner/Cargo.toml \
+              --no-fail-fast \
+              -- --include-ignored 2>&1 | tee cargo-test.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "cargo test exit code: $rc (informational; the count arbiter decides)"
+          echo "fuzz scale: quick-campaign defaults (no *_ITERS overrides); NOT a recorded long campaign" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Assert executed-test counts (the arbiter)
+        run: node scripts/ci/assert-test-counts.mjs cargo-test.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-log
+          path: |
+            cargo-test.log
+            build-pinocchio.log
+          if-no-files-found: ignore
+
+  # Verified green locally 2026-08-26 before wiring in:
+  #   check-production-wiring.sh -> exit 0
+  #   typecheck:production       -> exit 0
+  #   typecheck:quote-service    -> exit 0
+  # No test:* npm targets are wired here: everything else in package.json
+  # needs a live Surfpool fork (see the header) or the pinned rust
+  # toolchain the other job provides.
+  wiring-and-typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # check-production-wiring.sh uses ripgrep, which the hosted runner
+      # image does not ship.
+      - name: Install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm (version pinned by package.json packageManager)
+        run: npm install -g pnpm@10.28.2
+
+      - name: Production wiring check
+        run: bash scripts/check-production-wiring.sh
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck production guard harness
+        run: pnpm run typecheck:production
+
+      - name: Typecheck quote service
+        run: pnpm run typecheck:quote-service

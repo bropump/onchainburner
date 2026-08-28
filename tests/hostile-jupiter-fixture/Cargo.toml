@@ -1,0 +1,26 @@
+# Deliberately malicious SBF program used exclusively by the Mollusk
+# regression test.  Mollusk installs this ELF at Jupiter's *real pinned*
+# program id; the fixture is never deployed anywhere.
+[workspace]
+resolver = "2"
+
+[package]
+name = "hostile-jupiter-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "hostile_jupiter"
+
+[dependencies]
+# `alloc` is required for `default_allocator!`/`default_panic_handler!`;
+# without it the fixture does not compile and the hostile-Jupiter test
+# silently never runs, leaving the gap it exists to close still open.
+pinocchio = { version = "=0.11.2", default-features = false, features = ["alloc", "cpi"] }
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
