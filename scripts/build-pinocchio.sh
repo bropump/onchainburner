@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Native build and validation wrapper. This is NOT a cross-machine
+# reproducible-build wrapper: cargo-build-sbf selects an OS/architecture-specific
+# platform-tools archive, and v1.53's macOS/arm64 and Linux/x86_64 sysroots emit
+# different SBPF bytes. The public release artifact must be built in the same
+# digest-pinned Linux/x86_64 solana-verify container used by the remote verifier,
+# and those exact container-built bytes must be deployed without a native rebuild.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,8 +45,9 @@ build_args=(
   --tools-version "$tools_version"
 )
 
-# PINOCCHIO_BUILD_NETWORK no longer changes the artifact. Every network builds
-# the same bytes; the variable is kept so existing callers do not break.
+# PINOCCHIO_BUILD_NETWORK no longer changes the artifact. Within one fixed build
+# environment every network builds the same bytes; the variable is kept so
+# existing callers do not break.
 case "${PINOCCHIO_BUILD_NETWORK:-development}" in
   development|devnet|localnet|mainnet) ;;
   *)

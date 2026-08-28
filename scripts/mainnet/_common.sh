@@ -185,10 +185,30 @@ require_public_main() {
     || die "local HEAD $source_commit is not public main $remote_commit"
 }
 
+# A MAINNET artifact is built in the same container the public verifier uses,
+# never with the host toolchain. Measured 2026-08-28: the host build and the
+# container build of the SAME commit differ (executable ddda7cad… vs
+# 7de38c89…), because nothing pins the host rustc — this machine had 1.98.0,
+# the container has 1.93.1. Deploying a host build therefore produces a
+# program that can never be verified from source, which was exactly what
+# happened. The container build reproduced OtterSec's hash byte for byte.
+#
+# `scripts/build-pinocchio.sh` remains the fast path for tests and CI; it is
+# reproducible ON ONE MACHINE, which is enough for a test and not enough for
+# a release.
 build_sbfv3_artifact() {
-  require_build_toolchain
-  ylw "building SBPFv3 artifact ..."
-  bash "$REPO/scripts/build-pinocchio.sh"
+  command -v solana-verify >/dev/null 2>&1 \
+    || die "solana-verify is required to build a release artifact"
+  docker info >/dev/null 2>&1 \
+    || die "docker must be running to build a release artifact:
+   colima start   (or start Docker Desktop), then re-run"
+  ylw "building SBPFv3 artifact in the verifier container (slow: ~5 min) ..."
+  solana-verify build \
+    --library-name pinocchio_parity \
+    --arch v3 \
+    --cargo-build-sbf-args="--tools-version v1.53" \
+    "$REPO/programs/burner" \
+    || die "container build failed"
   [ -s "$ARTIFACT" ] || die "build did not produce $ARTIFACT"
   ARTIFACT_SIZE=$(stat -f%z "$ARTIFACT" 2>/dev/null || stat -c%s "$ARTIFACT")
   ARTIFACT_SHA=$(shasum -a 256 "$ARTIFACT" | cut -d' ' -f1)

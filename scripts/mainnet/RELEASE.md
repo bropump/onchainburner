@@ -7,31 +7,42 @@ tree is clean. Run the required production/fork validation first, including
 gitignored program-id keypair must already exist at
 `programs/burner/target/deploy/`; never commit it.
 
-Run, in order:
+## Canonical artifact and current release blocker
 
-```sh
-pnpm deploy:mainnet:dry-run
-pnpm deploy:mainnet
-pnpm verify:mainnet:publish
-```
+The canonical public release artifact is the ELF produced by the digest-pinned
+Linux/x86_64 `solana-verify` container selected by
+`[workspace.metadata.cli]`. Build in that container, validate that exact ELF,
+and deploy those exact bytes without rebuilding them natively. A native
+`cargo-build-sbf` build is not a substitute, even with cargo-build-sbf 4.0.0,
+platform-tools v1.53, `--arch v3`, and `--locked`: platform-tools v1.53 ships
+different host-specific sysroots, and its macOS/arm64 and Linux/x86_64 builds
+do not produce the same ELF. A `rust-toolchain.toml` pin does not change which
+host-specific platform-tools archive emits the SBPF program.
 
-1. `deploy:mainnet:dry-run` prompts for nothing and spends nothing. Check the
-   named public commit, program id, live wallet balance/cost quote, artifact
-   size, SHA-256, and `ELF flags 3 (SBPFv3)`.
-2. `deploy:mainnet` asks you to type the program id, then paste the payer /
-   deployer / upgrade-authority secret key with hidden input. It locks the
-   printed program and ProgramData rent, consumes the estimated transaction
-   fees, and temporarily needs the printed buffer rent (refunded on success).
-   Check the post-deploy executable hashes match and the displayed authority is
+The current `deploy:mainnet:dry-run`, `deploy:mainnet`, and
+`verify:mainnet:publish` scripts rebuild through the native wrapper. They must
+not be used for a release from macOS/arm64. Before another authorized upgrade,
+the deployment flow must be changed to consume and preserve the
+container-built ELF rather than rebuilding it. That tooling change is a release
+blocker; do not work around it by copying a native hash into the attestation.
+
+Once a no-rebuild deployment path exists, the required order is:
+
+1. Build in the pinned `solana-verify` Linux/x86_64 container. Record the full
+   SHA-256, executable hash, size, and `ELF flags 3 (SBPFv3)`.
+2. Run all production and fork validation against that exact container ELF.
+3. Dry-run and deploy that exact ELF without invoking a native build. Confirm
+   the post-deploy executable hash equals the recorded container hash and the
+   displayed authority is
    `4YBssBchMLgRwD7rwP6jG1ubCX1V1zWwyF3tZGyPSpzJ`.
-3. `verify:mainnet:publish` rebuilds before asking for the same hidden wallet
-   key. It writes/updates the solana-verify PDA (rent plus transaction/priority
-   fee), then submits the remote reproducible build. Check it reports verified
-   and prints this repo plus the exact commit from step 1.
+4. Publish the solana-verify PDA for the exact public commit with `--arch v3`
+   and `--cargo-build-sbf-args="--tools-version v1.53"`, then submit the remote
+   job. It must report verified and reproduce the container executable hash.
 
-The artifact is keyless and has no Cargo release feature; all networks build
-identical bytes. Client errors are append-only through 6043. The single-target
-instruction and `validate_config` Mode B (`0x01`) remain refused at dispatch.
+The artifact is keyless and has no Cargo release feature; within the canonical
+container all networks build identical bytes. Client errors are append-only
+through 6043. The single-target instruction and `validate_config` Mode B
+(`0x01`) remain refused at dispatch.
 
 Do **not** run `pnpm revoke:mainnet` as part of release. Owner decision
 2026-08-26 retains the authority. Moving it behind the selected timelocked
