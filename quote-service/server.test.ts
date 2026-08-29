@@ -527,6 +527,43 @@ describe("keyless HTTP boundary", () => {
     });
   });
 
+  it("accepts padded, serialized, and Axios-wrapped receipt shapes emitted in workerd", async () => {
+    let writes = 0;
+    const currentBase58Id =
+      "Bo9c7TsQ1f83uTuXEeB4miA1dyExtV2Dh5otznEnwwif";
+    const execute = createIrysMetadataUploadExecutor(
+      {
+        getBalance: async () => ({ toString: () => "100" }),
+        getPrice: async () => ({ toString: () => "1" }),
+        upload: async () => {
+          writes += 1;
+          return (writes === 1
+            ? JSON.stringify({ id: currentBase58Id })
+            : { data: JSON.stringify({ id: "m".repeat(43) }) }) as never;
+        },
+        utils: { fromAtomic: (value) => value.toString() },
+      },
+      {
+        compress: async () => ({ image: WEBP, contentType: "image/webp" }),
+        deliveryUri: testCompressor.deliveryUri,
+      }
+    );
+
+    const result = await execute({
+      name: "Burner",
+      symbol: "BURN",
+      description: "Worker receipts",
+      image: Buffer.from("89504e470d0a1a0a", "hex"),
+      imageContentType: "image/png",
+    });
+    expect(result.imageUri).to.equal(
+      `https://gateway.irys.xyz/${currentBase58Id}`
+    );
+    expect(result.uri).to.equal(
+      `https://gateway.irys.xyz/${"m".repeat(43)}`
+    );
+  });
+
   it("writes optional socials into the permanent metadata, omitting blanks", async () => {
     const writes: Buffer[] = [];
     const execute = createIrysMetadataUploadExecutor(

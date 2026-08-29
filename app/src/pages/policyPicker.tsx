@@ -21,6 +21,7 @@ const PRESET_ORDER = [
   "JUP",
   "MET",
   "KET",
+  "CHILLHOUSE",
   "ANSEM",
   "STNK",
 ] as const;

@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { useApp } from "../state/AppContext";
-import { lamportsToSol, shortAddress } from "../ui";
+import { shortAddress } from "../ui";
+
+function compactSol(lamports: bigint): string {
+  const hundredths = (lamports + 5_000_000n) / 10_000_000n;
+  return `${hundredths / 100n}.${(hundredths % 100n)
+    .toString()
+    .padStart(2, "0")}`;
+}
 
 /** Reown account controls, plus the explicitly fork-only demo wallet. */
 export function WalletGate() {
@@ -25,15 +32,14 @@ export function WalletGate() {
     return (
       <div className="wallet-gate">
         <button
-          className="btn small"
+          className="btn primary wallet-connect"
           disabled={walletConnectionStatus === "connecting"}
           onClick={() => connectWallet().catch((e) => setError(String(e)))}
         >
           {walletConnectionStatus === "connecting"
             ? "Connecting…"
-            : "Connect wallet"}
+            : "Connect"}
         </button>
-        <span className="wallet-network">{walletNetwork}</span>
         {demoEnabled && (
           <button
             className="btn small"
@@ -51,33 +57,27 @@ export function WalletGate() {
 
   const lamports = walletBalance ?? 0n;
   const needsFunds = lamports < 50_000_000n;
+  const address = wallet.publicKey.toBase58();
+  const walletAction = wallet.kind === "reown" ? manageWallet : disconnectWallet;
   return (
     <div className="wallet-gate">
-      <span>
-        {wallet.label}{" "}
-        <code className="mono">
-          {shortAddress(wallet.publicKey.toBase58(), 6)}
-        </code>
-        {" · "}
-        <span className="mono">{lamportsToSol(lamports)} SOL</span>
-        {" · "}
-        <span className="wallet-network">{walletNetwork}</span>
-      </span>
-      {wallet.kind === "reown" && (
-        <button
-          className="btn small"
-          onClick={() => manageWallet().catch((e) => setError(String(e)))}
-        >
-          Account
-        </button>
-      )}
       <button
-        className="btn small"
-        onClick={() =>
-          disconnectWallet().catch((e) => setError(String(e)))
-        }
+        className={`wallet-chip${needsFunds ? " warning" : ""}`}
+        aria-label={`${wallet.label}, ${compactSol(lamports)} SOL, ${shortAddress(
+          address,
+          6
+        )}, ${walletNetwork}${needsFunds ? ", needs funds" : ""}`}
+        title={`${shortAddress(address, 6)} · ${walletNetwork}${
+          wallet.kind === "reown" ? " · Open account" : " · Disconnect"
+        }`}
+        onClick={() => walletAction().catch((e) => setError(String(e)))}
       >
-        Disconnect
+        <span className="wallet-status" aria-hidden="true" />
+        <span className="wallet-provider">{wallet.label}</span>
+        <span className="wallet-separator" aria-hidden="true">
+          ·
+        </span>
+        <span className="mono">{compactSol(lamports)} SOL</span>
       </button>
       {demoEnabled && (
         <button
@@ -99,7 +99,6 @@ export function WalletGate() {
           {busy ? "Funding…" : "Airdrop 100 SOL"}
         </button>
       )}
-      {needsFunds && <span className="wallet-warning">Fund this wallet first.</span>}
       {error && <span className="wallet-error">{error}</span>}
     </div>
   );

@@ -49,6 +49,8 @@ async function main() {
   const caller = Keypair.generate();
   const wallet = walletFromKeypair(caller);
   let submitBody: Record<string, unknown> | undefined;
+  let metadataFinalizeBody: Record<string, unknown> | undefined;
+  const metadataFinalize: { calls: number } = { calls: 0 };
   let safe = true;
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
@@ -79,6 +81,28 @@ async function main() {
         transactionBytes: 800,
       });
     }
+    if (url.endsWith("/metadata/image/prepare")) {
+      return Response.json({
+        imageBase64: Buffer.from("prepared-webp").toString("base64"),
+        imageContentType: "image/webp",
+        originalImageBytes: 8,
+        imageBytes: 13,
+      });
+    }
+    if (url.endsWith("/metadata/finalize")) {
+      metadataFinalize.calls += 1;
+      metadataFinalizeBody = JSON.parse(String(init?.body)) as Record<
+        string,
+        unknown
+      >;
+      return Response.json({
+        uri: "https://gateway.irys.xyz/metadata",
+        imageUri: "https://gateway.irys.xyz/image",
+        deliveryImageUri: "https://images.example/image",
+        originalImageBytes: 13,
+        imageBytes: 12,
+      });
+    }
     throw new Error(`unexpected URL ${url}`);
   }) as typeof fetch;
 
@@ -107,6 +131,31 @@ async function main() {
       submitted.signatures.length === 1 &&
       submitted.signatures[0].some((byte) => byte !== 0),
     "browser did not return one fully caller-signed transaction"
+  );
+
+  const preparedImage = await service.prepareMetadataImage(
+    new Uint8Array(Buffer.from("raw-image")),
+    "image/png"
+  );
+  check(
+    Number(metadataFinalize.calls) === 0,
+    "early image preparation created permanent metadata"
+  );
+  await service.uploadMetadata({
+    name: "Final Name",
+    symbol: "FINAL",
+    description: "the description at confirmation time",
+    image: preparedImage.image,
+    imageContentType: preparedImage.imageContentType,
+  });
+  check(
+    Number(metadataFinalize.calls) === 1,
+    "confirmation did not finalize metadata"
+  );
+  check(
+    metadataFinalizeBody?.description ===
+      "the description at confirmation time",
+    "final metadata did not use the confirmation-time fields"
   );
 
   safe = false;

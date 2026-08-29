@@ -104,8 +104,7 @@ export function PermanenceConfirmation({
       <code>{vault}</code>. Exact legs: {legs.map((leg, index) => (
         <span key={`${leg.mint}-${index}`}>
           {index > 0 && "; "}
-          <code>{leg.mint}</code> at {(leg.bps / 100).toFixed(2)}% ({leg.bps}{" "}
-          bps)
+          <code>{leg.mint}</code> at {(leg.bps / 100).toFixed(2)}%
         </span>
       ))}. There is no withdrawal or config-change instruction; changing a
       mint or weight derives a different vault address. A Pump fee share can
@@ -145,7 +144,7 @@ export function WeightBar({ legs }: { legs: { mint: string; bps: number }[] }) {
             key={i}
             className={`seg ${SEGMENT_CLASSES[i % 4]}`}
             style={{ width: `${Math.min(100, (Math.max(0, leg.bps || 0) / 100))}%` }}
-            title={`${legLabel(leg.mint)} ${leg.bps} bps`}
+            title={`${legLabel(leg.mint)} ${leg.bps / 100}%`}
           />
         ))}
         {total < 10_000 && (
@@ -160,7 +159,9 @@ export function WeightBar({ legs }: { legs: { mint: string; bps: number }[] }) {
           </span>
         ))}
         <span className="mono" style={{ marginLeft: "auto", color: overflow ? "var(--err)" : total === 10_000 ? "var(--ok)" : "var(--warn)" }}>
-          {total.toLocaleString()} / 10,000 bps
+          {(total / 100).toLocaleString(undefined, {
+            maximumFractionDigits: 2,
+          })}% allocated
         </span>
       </div>
     </div>

@@ -17,10 +17,10 @@ export const appKit = createAppKit({
   defaultNetwork: solana,
   projectId: REOWN_PROJECT_ID,
   metadata: {
-    name: "Onchain Burner",
-    description: "Immutable Solana token-burn vaults",
+    name: "Cooked",
+    description: "Configuration-bound Solana community-burn vaults",
     url: origin,
-    icons: [],
+    icons: [`${origin}/cooked-flame.png`],
   },
   features: {
     analytics: false,

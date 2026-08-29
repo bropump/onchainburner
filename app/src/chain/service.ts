@@ -48,8 +48,8 @@ export type BurnRequest = {
   launchMint: string;
   legs: { mint: string; bps: number; reference?: string }[];
   amountInLamports: string;
-  /** The vault's creator-owned lookup table(s). Required for a 2+ leg burn:
-   * without one the transaction cannot fit Solana's 1232-byte limit. */
+  /** Optional creator-owned lookup table(s). The shipped two-leg 90/10 policy
+   * is quoted to fit without one; larger/custom routes may still use one. */
   lookupTableAddresses?: string[];
 };
 
@@ -67,6 +67,13 @@ export type MetadataUploadRequest = Readonly<{
   links?: { website?: string; twitter?: string; telegram?: string };
   image: Uint8Array;
   imageContentType: (typeof METADATA_IMAGE_TYPES)[number];
+}>;
+
+export type PreparedMetadataImage = Readonly<{
+  image: Uint8Array;
+  imageContentType: "image/webp";
+  originalImageBytes: number;
+  imageBytes: number;
 }>;
 
 export type MetadataUploadReceipt = Readonly<{
@@ -313,12 +320,39 @@ async function callerPaidBurn(
 export function makeService(baseUrl: string, callerPaid = false) {
   return {
     baseUrl,
+    async prepareMetadataImage(
+      image: Uint8Array,
+      imageContentType: MetadataUploadRequest["imageContentType"]
+    ): Promise<PreparedMetadataImage> {
+      const result = await post<{
+        imageBase64: string;
+        imageContentType: "image/webp";
+        originalImageBytes: number;
+        imageBytes: number;
+      }>(
+        baseUrl,
+        "/metadata/image/prepare",
+        {
+          image: {
+            contentType: imageContentType,
+            dataBase64: Buffer.from(image).toString("base64"),
+          },
+        },
+        60_000
+      );
+      return {
+        image: new Uint8Array(Buffer.from(result.imageBase64, "base64")),
+        imageContentType: result.imageContentType,
+        originalImageBytes: result.originalImageBytes,
+        imageBytes: result.imageBytes,
+      };
+    },
     uploadMetadata(
       request: MetadataUploadRequest
     ): Promise<MetadataUploadReceipt> {
       return post<MetadataUploadReceipt>(
         baseUrl,
-        "/metadata/upload",
+        "/metadata/finalize",
         {
           name: request.name,
           symbol: request.symbol,

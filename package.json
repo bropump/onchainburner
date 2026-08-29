@@ -34,17 +34,20 @@
     "test:6018": "npx tsx scripts/e2e-6018-cashback-retry.ts",
     "triage": "bash scripts/triage.sh",
     "test:guards": "pnpm run test:security-guards",
-    "typecheck:quote-service": "tsc --noEmit --target ES2020 --module commonjs --moduleResolution node --esModuleInterop --types node,mocha,chai quote-service/core.ts quote-service/reference.ts quote-service/markets.ts quote-service/adapters.ts quote-service/cli.ts quote-service/server.ts quote-service/core.test.ts quote-service/reference.test.ts quote-service/server.test.ts quote-service/adapters.test.ts quote-service/directcurve.test.ts quote-service/markets.test.ts",
-    "test:quote-service": "TS_NODE_TRANSPILE_ONLY=1 mocha -r ts-node/register -t 20000 quote-service/core.test.ts quote-service/reference.test.ts quote-service/server.test.ts quote-service/adapters.test.ts quote-service/directcurve.test.ts quote-service/markets.test.ts",
+    "typecheck:quote-service": "tsc --noEmit --target ES2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck --types node,mocha,chai quote-service/core.ts quote-service/reference.ts quote-service/markets.ts quote-service/adapters.ts quote-service/cli.ts quote-service/server.ts quote-service/worker-fetch-compat.ts quote-service/irys-client.ts quote-service/token-info.ts quote-service/fetch-handler.ts quote-service/core.test.ts quote-service/reference.test.ts quote-service/server.test.ts quote-service/fetch-handler.test.ts quote-service/adapters.test.ts quote-service/directcurve.test.ts quote-service/markets.test.ts && tsc --noEmit --target ES2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck --types node quote-service/worker-configuration.d.ts quote-service/worker.ts",
+    "test:quote-service": "TS_NODE_TRANSPILE_ONLY=1 node --no-experimental-strip-types ./node_modules/mocha/bin/mocha -r ts-node/register -t 20000 quote-service/core.test.ts quote-service/reference.test.ts quote-service/server.test.ts quote-service/fetch-handler.test.ts quote-service/adapters.test.ts quote-service/directcurve.test.ts quote-service/markets.test.ts",
+    "test:image-worker": "node quote-service/cloudflare-image-worker.test.mjs",
     "test:redteam-followup": "npx tsx scripts/redteam-followup.ts",
     "test:hostile-jupiter-fuzz": "HOSTILE_FUZZ_ITERS=${HOSTILE_FUZZ_ITERS:-3000} rustup run 1.89.0-sbpf-solana-v1.53 cargo test --manifest-path programs/burner/Cargo.toml --test hostile_keyless_jupiter keyless_hostile_jupiter_fuzz -- --ignored --nocapture",
-    "serve:quote-service": "npx tsx quote-service/server.ts",
+    "serve:quote-service": "npx tsx quote-service/node-main.ts",
     "build:quote-service": "tsc -p tsconfig.quote-service.json",
-    "test:service-fork": "npx tsx scripts/keyless-service-fork-burn.ts"
+    "test:service-fork": "npx tsx scripts/keyless-service-fork-burn.ts",
+    "create:setup-lut": "npx tsx scripts/create-setup-lut.ts"
   },
   "dependencies": {
     "@irys/upload": "0.0.15",
     "@irys/upload-solana": "0.1.8",
+    "@pump-fun/agent-payments-sdk": "1.0.7",
     "@pump-fun/pump-sdk": "^1.36.0",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.98.4",
@@ -59,11 +62,12 @@
     "mocha": "^9.0.3",
     "prettier": "^2.6.2",
     "ts-node": "10.9.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "wrangler": "4.127.1"
   },
   "name": "onchainburner",
   "version": "1.0.0",
-  "description": "An immutable Solana burner vault. A vault's configuration is its PDA address: there is no configuration account, update instruction, or withdrawal path. The production program converts vault SOL through Jupiter and atomically burns the configured target tokens.",
+  "description": "A configuration-bound Solana buyback-and-burn system. The current program has no configuration account, update instruction, or withdrawal path and atomically burns tokens bought through Jupiter.",
   "main": "index.js",
   "directories": {
     "test": "tests"
@@ -78,5 +82,11 @@
   "bugs": {
     "url": "https://github.com/bropump/onchainburner/issues"
   },
-  "homepage": "https://github.com/bropump/onchainburner#readme"
+  "homepage": "https://github.com/bropump/onchainburner#readme",
+  "pnpm": {
+    "overrides": {
+      "ws@>=8.0.0 <8.21.0": "8.21.0",
+      "uuid@<11.1.1": "11.1.1"
+    }
+  }
 }

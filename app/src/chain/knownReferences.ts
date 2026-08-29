@@ -1,14 +1,11 @@
 /**
- * Historical burn-proven pools from the 2026-08-26 fork campaign. Documentation
- * / offline tooling only — NOT the live pick (OWNER 2026-08-28). Interactive
- * discovery uses `selectReference` (GPA + `rankCandidates`). `$PUMP` has a
- * real bonding curve, so live pick is the Pump venue, not the CLMM below.
- *
- * Every pool below landed real keyless burns as the bound reference on the
- * 2026-08-26 fork campaign
- * (prototypes/switchboard-stateless-surfpool/evidence/deploy-verify-20260826/
- * tm-matrix-v3-results.jsonl). A table entry is a hint, never a trust
- * assumption and never an override of live enumeration.
+ * Curated fast-path candidates for shipped presets. Most are historical
+ * burn-proven pools from the 2026-08-26 fork campaign; newer entries record
+ * the explicitly selected pool that was live-authenticated when the preset
+ * shipped. A table entry is never trusted by itself: `resolveSelection`
+ * re-authenticates the exact account (owner, layout, pair, vaults, fee and
+ * depth) on every fresh session, then the setup transaction runs the on-chain
+ * Mode A validation again. Only an unknown mint pays for full GPA enumeration.
  */
 
 export type KnownReference = {
@@ -21,6 +18,38 @@ export type KnownReference = {
 };
 
 export const KNOWN_REFERENCES: Record<string, KnownReference> = {
+  "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump": {
+    symbol: "PNUT",
+    pool: "4AZRPNEfCJ7iw28rJu5aUyeQhYcvdcNm8cswyL51AY9i",
+    venue: "Raydium v4",
+    pickedAt: "2026-08-29",
+    reason:
+      "the main SOL/PNUT Raydium v4 pool authenticates live at ~16,168 SOL with 99.6845% of LP burned (~16,117 SOL permanently non-withdrawable)",
+  },
+  JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN: {
+    symbol: "JUP",
+    pool: "C8Gr6AUuq9hEdSYJzoEpNcdjpojPZwqG5MtQbeouNNwg",
+    venue: "Meteora DLMM",
+    pickedAt: "2026-08-29",
+    reason:
+      "the main established SOL/JUP concentrated pool: deepest supported DLMM at ~4,949 SOL and live since 2024-01-31, versus the thin ~48 SOL DLMM Jupiter chooses for a 1 SOL probe",
+  },
+  METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL: {
+    symbol: "MET",
+    pool: "AsSyvUnbfaZJPRrNh3kUuvZTeHKoMVWEoHz86f4Q5D9x",
+    venue: "Meteora DLMM",
+    pickedAt: "2026-08-29",
+    reason:
+      "the main established SOL/MET concentrated pool: deepest supported DLMM at ~2,175 SOL, from MET's original 2025-10-23 launch-day pool cohort, and burn-proven",
+  },
+  "43VWkd99HjqkhFTZbWBpMpRhjG469nWa7x7uEsgSH7We": {
+    symbol: "STNK",
+    pool: "EyktEFod1gAgsuM1hXmEpqkitFFk9XczkqLPx2vKiceg",
+    venue: "Raydium CP",
+    pickedAt: "2026-08-29",
+    reason:
+      "the canonical SOL/STNK Raydium CP authenticates live at ~1,447 SOL with 99.98% of LP in verified Burn & Earn custody",
+  },
   jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL: {
     symbol: "JTO",
     pool: "JVoPtWWDsRcLvQosu5fWc2CaNF6jEtJzbxdPtcEuvZo",

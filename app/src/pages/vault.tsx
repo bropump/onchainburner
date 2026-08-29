@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  type Connection,
   PublicKey,
-  SystemProgram,
-  TransactionInstruction,
 } from "@solana/web3.js";
-import { useTokenNames } from "../chain/tokenName";
+import { useTokenNames, useTokenPreview } from "../chain/tokenName";
 import { useApp } from "../state/AppContext";
 import { deriveSplitPda, legsFromParam, splitAmounts } from "../chain/derive";
 import { fetchCandidate } from "../chain/reference";
 import { sendWithWallet, simulateValidateConfig } from "../chain/instructions";
+import {
+  buildCreatorFeeClaimInstructions,
+  getCreatorFeeClaimStatus,
+  type CreatorFeeClaimStatus,
+} from "../chain/pump";
 import {
   collectVaultAltAddresses,
   createVaultLookupTable,
@@ -31,11 +35,29 @@ import {
   lamportsToSol,
   legLabel,
   shortAddress,
+  type TokenNameMap,
   WeightBar,
 } from "../ui";
 export type VaultSearch = { launch: string; legs: string; label?: string };
 
 type ReceiptEntry = { at: number; amount: string; receipt: BurnReceipt };
+
+type VaultBurnSummary = Readonly<{
+  totals: {
+    solLamports: string;
+    burnCount: number;
+    targetCount: number;
+    lastBurnAt: number | null;
+  };
+  targets: readonly {
+    mint: string;
+    solLamports: string;
+    burnedAtoms: string;
+    burnCount: number;
+    lastBurnAt: number | null;
+  }[];
+  index: { backfillComplete: boolean };
+}>;
 
 export function VaultPage({ search }: { search: VaultSearch }) {
   const {
@@ -58,6 +80,7 @@ export function VaultPage({ search }: { search: VaultSearch }) {
     connection,
     useMemo(() => (legs ?? []).map((l) => l.mint), [legs])
   );
+  const namespaceToken = useTokenPreview(connection, search.launch);
   const launch = useMemo(() => {
     try {
       return new PublicKey(search.launch);
@@ -92,6 +115,11 @@ export function VaultPage({ search }: { search: VaultSearch }) {
   const [log, setLog] = useState<string[]>([]);
   const [amount, setAmount] = useState("");
   const [receipts, setReceipts] = useState<ReceiptEntry[]>([]);
+  const [claimStatus, setClaimStatus] =
+    useState<CreatorFeeClaimStatus | null>(null);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  const [claimRefresh, setClaimRefresh] = useState(0);
+  const [burnSummary, setBurnSummary] = useState<VaultBurnSummary | null>(null);
   /** Demo-only live Pump bonding-curve state, so the trade control shows how
    * close the coin is to graduating and reports a completed curve exactly
    * once (the button disables off `complete`) instead of ten failures. */
@@ -181,20 +209,11 @@ export function VaultPage({ search }: { search: VaultSearch }) {
   }, [legCaps]);
 
   /**
-   * The vault's creator-owned address lookup table. A keyless split burn
-   * inlines 8 fixed + 7-per-leg vault accounts before any Jupiter route
-   * account. At 3+ legs the burn cannot fit Solana's 1232-byte transaction
-   * without a table compressing those keys (measured 1233 bytes minimum),
-   * so the table is REQUIRED and burning is gated on it. At 2 legs it is
-   * strongly RECOMMENDED but not gated: measured 2026-08-27
-   * (scripts/measure-2leg-size.ts), uncapped routes fit only 7/18 walks and
-   * the service must narrow the route to land the rest, with margins as
-   * thin as 1230/1232 bytes — the table is what makes 2-leg burns reliable.
-   * Per the permissionless design the burn service never creates the table
-   * itself; the creator makes it here once, pays its rent, and owns it
-   * (deactivatable/reclaimable, not frozen).
+   * The shipped two-leg 90/10 burn is deliberately LUT-free and uses the
+   * quote service's maxAccounts fitting ladder. A 3+ leg custom vault still
+   * requires a creator-owned table to compress its deterministic accounts.
    */
-  const needsLookupTable = legs !== null && legs.length >= 2;
+  const needsLookupTable = legs !== null && legs.length >= 3;
   const requiresLookupTable = legs !== null && legs.length >= 3;
   const [lookupTable, setLookupTable] = useState<string | null>(null);
   /** null = not yet checked; true/false = on-chain active & covering. */
@@ -226,7 +245,10 @@ export function VaultPage({ search }: { search: VaultSearch }) {
       );
       if (!candidate.vaultA || !candidate.vaultB || !candidate.feeSource) {
         throw new Error(
-          `reference for ${legLabel(leg.mint, tokenNames)} is not fully resolved yet`
+          `reference for ${legLabel(
+            leg.mint,
+            tokenNames
+          )} is not fully resolved yet`
         );
       }
       const mintInfo = await connection.getAccountInfo(
@@ -314,17 +336,20 @@ export function VaultPage({ search }: { search: VaultSearch }) {
   const pushLog = (line: string) =>
     setLog((current) => [...current.slice(-11), line]);
 
+  const refreshVaultBalance = useCallback(async () => {
+    if (!vault) return;
+    const value = BigInt(await connection.getBalance(vault, "confirmed"));
+    balanceRef.current = value;
+    setBalance(value);
+  }, [connection, vault?.toBase58()]);
+
   // live balance
   useEffect(() => {
     if (!vault) return;
     let cancelled = false;
     const poll = async () => {
       try {
-        const value = BigInt(await connection.getBalance(vault, "confirmed"));
-        if (!cancelled) {
-          balanceRef.current = value;
-          setBalance(value);
-        }
+        if (!cancelled) await refreshVaultBalance();
       } catch {
         /* fork unreachable; badge covers it */
       }
@@ -335,7 +360,57 @@ export function VaultPage({ search }: { search: VaultSearch }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [connection, vault]);
+  }, [refreshVaultBalance, vault]);
+
+  // Pump calculates the exact claimable amount, including an AMM creator-fee
+  // sweep for graduated launches. Failure is shown as unavailable, never as 0.
+  useEffect(() => {
+    if (!launch || !vault) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await getCreatorFeeClaimStatus({
+          connection,
+          mint: launch,
+          vault,
+        });
+        if (!cancelled) {
+          setClaimStatus(status);
+          setClaimError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setClaimStatus(null);
+          setClaimError(
+            String((error as Error).message ?? error).slice(0, 240)
+          );
+        }
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [connection, launch?.toBase58(), vault?.toBase58(), claimRefresh]);
+
+  // Exact finalized totals for THIS vault only. Never substitute the global
+  // token leaderboard, which can include unrelated vault configurations.
+  useEffect(() => {
+    if (!vault) return;
+    const controller = new AbortController();
+    fetch(`/api/community-vaults?vault=${encodeURIComponent(vault.toBase58())}`, {
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("vault burn index unavailable");
+        return response.json();
+      })
+      .then((value) => setBurnSummary(value as VaultBurnSummary))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [vault?.toBase58(), receipts.length, claimRefresh]);
 
   // Decimals for receipt formatting, plus existence of every config mint on
   // the CONNECTED chain. Vault configs live only in this browser and survive
@@ -474,6 +549,10 @@ export function VaultPage({ search }: { search: VaultSearch }) {
     balance !== null && balance > VAULT_RENT_FLOOR_LAMPORTS
       ? balance - VAULT_RENT_FLOOR_LAMPORTS
       : 0n;
+  const hasClaimableFees =
+    claimStatus !== null &&
+    claimStatus.canDistribute &&
+    claimStatus.distributableLamports > 0n;
 
   const parseAmount = (): bigint | null => {
     if (!amount.trim()) return null;
@@ -498,10 +577,6 @@ export function VaultPage({ search }: { search: VaultSearch }) {
     legCaps !== null && legCaps.some((leg) => leg.capLamports === null);
   const maxBurnNow =
     capTotal !== null && capTotal < spendable ? capTotal : spendable;
-  const burnsNeeded =
-    capTotal !== null && capTotal > 0n && spendable > capTotal
-      ? Number((spendable + capTotal - 1n) / capTotal)
-      : null;
   const overCapLeg = (() => {
     if (
       !burnLamports ||
@@ -578,14 +653,76 @@ export function VaultPage({ search }: { search: VaultSearch }) {
     }
   }
 
+  async function claimCreatorFees() {
+    if (!wallet || !hasClaimableFees) return;
+    setBusy("claim-fees");
+    try {
+      const instructions = await buildCreatorFeeClaimInstructions({
+        connection,
+        payer: wallet.publicKey,
+        mint: launch!,
+        vault: vault!,
+      });
+      const signature = await sendWithWallet(
+        connection,
+        wallet,
+        instructions
+      );
+      pushLog(
+        `claimed Pump creator fees to vault: ${shortAddress(signature, 8)}`
+      );
+      await refreshVaultBalance();
+      setClaimRefresh((value) => value + 1);
+    } catch (error) {
+      pushLog(
+        `claim failed: ${String((error as Error).message ?? error).slice(0, 240)}`
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div>
       <div className="hero-copy">
         <h1>{search.label ? `${search.label} vault` : "Vault"}</h1>
-        <p>
-          Namespace{" "}
-          <code className="mono">{shortAddress(search.launch, 6)}</code>
-          {" · "}
+        <div className="namespace-identity">
+          {namespaceToken.image ? (
+            <img
+              className="namespace-image"
+              src={namespaceToken.image}
+              alt=""
+            />
+          ) : (
+            <span className="namespace-image namespace-placeholder" aria-hidden="true">
+              {(namespaceToken.token?.symbol || namespaceToken.token?.name || "?")
+                .slice(0, 2)
+                .toUpperCase()}
+            </span>
+          )}
+          <div className="namespace-details">
+            <span className="namespace-label">Namespace token</span>
+            <div className="namespace-title">
+              <strong>
+                {namespaceToken.token?.name || search.label || "Token"}
+              </strong>
+              {namespaceToken.token?.symbol && (
+                <span>
+                  {namespaceToken.token.symbol.startsWith("$") ? "" : "$"}
+                  {namespaceToken.token.symbol}
+                </span>
+              )}
+              {namespaceToken.loading && !namespaceToken.token && (
+                <span className="sub">loading…</span>
+              )}
+            </div>
+            <div className="namespace-ca">
+              <code className="mono">{search.launch}</code>
+              <CopyButton value={search.launch} />
+            </div>
+          </div>
+        </div>
+        <p className="vault-allocation">
           {legs.map((leg, i) => (
             <span key={i} className="mono">
               {i > 0 && " / "}
@@ -705,21 +842,26 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                 </div>
               )}
               {curve && curve.complete && (
-                <div className="plain-message error-copy" style={{ margin: "8px 0" }}>
+                <div
+                  className="plain-message error-copy"
+                  style={{ margin: "8px 0" }}
+                >
                   <strong>This coin has graduated.</strong> Its bonding curve is
                   complete, so the demo "trade" buys are closed (Pump 6005) — no
                   more creator fees can be generated on the curve.{" "}
                   {curve.poolExists ? (
                     <>
-                      Its canonical PumpSwap pool exists, so this coin is still a
-                      valid burn target and any vault holding its fees can burn.
+                      Its canonical PumpSwap pool exists, so this coin is still
+                      a valid burn target and any vault holding its fees can
+                      burn.
                     </>
                   ) : (
                     <>
-                      On mainnet Pump's migrator creates its PumpSwap pool within
-                      minutes; a local fork never runs that, so the own-leg burn
-                      is paused (REFERENCE_MIGRATING) until you crank the
-                      migration below. The vault's SOL is safe throughout.
+                      On mainnet Pump's migrator creates its PumpSwap pool
+                      within minutes; a local fork never runs that, so the
+                      own-leg burn is paused (REFERENCE_MIGRATING) until you
+                      crank the migration below. The vault's SOL is safe
+                      throughout.
                     </>
                   )}
                   <div
@@ -784,9 +926,9 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                           "curve near graduation — trading paused to keep this coin testable"
                         );
                       }
-                      return `trade: ${
-                        result.buys.length
-                      } Pump buy${result.buys.length === 1 ? "" : "s"} (${result.buys
+                      return `trade: ${result.buys.length} Pump buy${
+                        result.buys.length === 1 ? "" : "s"
+                      } (${result.buys
                         .map((b) => lamportsToSol(b))
                         .join(" + ")} SOL) — creator fees accrued${
                         result.progressPct !== undefined
@@ -830,8 +972,8 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                     })
                   }
                 >
-                  {busy === "fund" ? <span className="spin" /> : null} airdrop 25
-                  SOL to vault
+                  {busy === "fund" ? <span className="spin" /> : null} airdrop
+                  25 SOL to vault
                 </button>
               </div>
               {log.length > 0 && (
@@ -842,46 +984,72 @@ export function VaultPage({ search }: { search: VaultSearch }) {
             </div>
           )}
 
-          {wallet && (
-            <div className="panel">
-              <h2>Fund from your wallet</h2>
-              <p className="sub">
-                The vault is an ordinary System account: any SOL transfer funds
-                it, from any source.
-              </p>
-              <button
-                className="btn"
-                disabled={busy !== null}
-                onClick={() =>
-                  runDemo("wallet-fund", async () => {
-                    const ix: TransactionInstruction = SystemProgram.transfer({
-                      fromPubkey: wallet.publicKey,
-                      toPubkey: vault,
-                      lamports: 1_000_000_000n,
-                    });
-                    const signature = await sendWithWallet(connection, wallet, [
-                      ix,
-                    ]);
-                    return `sent 1 SOL from ${wallet.label}: ${shortAddress(
-                      signature,
-                      8
-                    )}`;
-                  })
-                }
-              >
-                send 1 SOL to the vault
-              </button>
+          <div className="panel">
+            <h2>Pump fees</h2>
+            <div className="claim-ready">
+              <div>
+                <span>{hasClaimableFees ? "Ready to claim" : "Nothing to claim"}</span>
+                <strong>
+                  {claimStatus
+                    ? `${lamportsToSol(claimStatus.distributableLamports)} SOL`
+                    : "—"}
+                </strong>
+              </div>
+              {hasClaimableFees && (
+                <button
+                  className="btn primary"
+                  disabled={!wallet || busy !== null}
+                  onClick={claimCreatorFees}
+                >
+                  {busy === "claim-fees" ? <span className="spin" /> : null}
+                  {wallet ? "Claim to vault" : "Connect to claim"}
+                </button>
+              )}
             </div>
-          )}
+            {claimError && (
+              <div
+                className="plain-message error-copy"
+                style={{ marginTop: 10 }}
+              >
+                {claimError}
+              </div>
+            )}
+            <div className="claim-history">
+              <span>Burned so far</span>
+              <strong>
+                {burnSummary
+                  ? `${lamportsToSol(burnSummary.totals.solLamports)} SOL`
+                  : "—"}
+              </strong>
+              {burnSummary && (
+                <small>
+                  {burnSummary.totals.burnCount.toLocaleString()} {burnSummary.totals.burnCount === 1 ? "burn" : "burns"}
+                </small>
+              )}
+            </div>
+            {burnSummary && burnSummary.targets.length > 0 && (
+              <div className="claim-burned-targets">
+                {burnSummary.targets.map((target) => (
+                  <div key={target.mint}>
+                    <span>{legLabel(target.mint, tokenNames)}</span>
+                    <strong>
+                      {formatRaw(target.burnedAtoms, decimals[target.mint] ?? null)}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <div>
           <div className="panel">
             <h2>Burn</h2>
             <p className="sub">
-              The burn service builds the Jupiter swap-and-burn; your wallet is
-              the only signer, and every rule — including the price floor — is
-              enforced by the program on chain.
+              Available to burn:{" "}
+              <strong>
+                {capsUnknown ? "unavailable" : `${lamportsToSol(maxBurnNow)} SOL`}
+              </strong>
             </p>
             {needsLookupTable && (
               <div
@@ -899,21 +1067,17 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                     {lookupTableReady === false && (
                       <div style={{ marginTop: 6, color: "var(--err)" }}>
                         The remembered table is no longer active or complete on{" "}
-                        <code className="mono">{rpcUrl}</code>. Create a new one.
+                        <code className="mono">{rpcUrl}</code>. Create a new
+                        one.
                       </div>
                     )}
                   </>
                 ) : (
                   <>
-                    <strong>
-                      {requiresLookupTable
-                        ? `This ${legs.length}-leg vault needs an address lookup table before it can burn.`
-                        : `This 2-leg vault should have an address lookup table.`}
-                    </strong>{" "}
-                    {requiresLookupTable
-                      ? "A 3+ leg keyless burn inlines the vault's own accounts and cannot fit Solana's 1232-byte transaction without one."
-                      : "A 2-leg burn only fits without one when the service narrows the Jupiter route, and even then sometimes by just 2 bytes — with the table it fits comfortably every time."}{" "}
-                    You (the creator) create and own it — roughly{" "}
+                    <strong>{`This ${legs.length}-leg vault needs an address lookup table before it can burn.`}</strong>{" "}
+                    A 3+ leg keyless burn inlines the vault's own accounts and
+                    cannot fit Solana's 1232-byte transaction without one. You
+                    (the creator) create and own it — roughly{" "}
                     {lamportsToSol(
                       estimateLookupTableRentLamports(8 + legs.length * 7)
                     )}{" "}
@@ -941,54 +1105,10 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                 )}
               </div>
             )}
-            {legCaps && capTotal !== null && (
-              <div className="sub" style={{ margin: "8px 0" }}>
-                <p className="sub" style={{ margin: 0 }}>
-                  per-burn max <strong>{lamportsToSol(maxBurnNow)} SOL</strong>
-                  {burnsNeeded !== null && (
-                    <> · ~{burnsNeeded} burns to empty</>
-                  )}
-                </p>
-                <p className="sub" style={{ marginTop: 6 }}>
-                  The program caps each leg at its reference pool's depth × fee
-                  (6040): burns stay small enough relative to their pool that
-                  moving the price against you is not worth anyone's while. A
-                  vault above the cap burns over several transactions.
-                </p>
-                <p className="sub mono" style={{ marginTop: 4 }}>
-                  {legCaps
-                    .filter((leg) => leg.capLamports !== null)
-                    .map(
-                      (leg) =>
-                        `${legLabel(leg.mint, tokenNames)} ≤ ${lamportsToSol(
-                          leg.capLamports!
-                        )} SOL (${(leg.bps / 100).toFixed(0)}%)`
-                    )
-                    .join(" · ")}
-                </p>
-              </div>
-            )}
             {capsUnknown && (
-              <div style={{ margin: "8px 0" }}>
-                <p className="sub" style={{ margin: 0 }}>
-                  <strong>No burnable amount right now.</strong> A split burn is
-                  atomic — a leg that cannot price means no leg burns. The
-                  vault's SOL is safe and stays put.
-                </p>
-                <div>
-                  {legCaps!
-                    .filter((leg) => leg.capLamports === null)
-                    .map((leg) => (
-                      <p
-                        className="sub"
-                        key={leg.mint}
-                        style={{ marginTop: 6 }}
-                      >
-                        {legLabel(leg.mint, tokenNames)}: {leg.note ?? "no cap available"}
-                      </p>
-                    ))}
-                </div>
-              </div>
+              <p className="sub" style={{ margin: "8px 0" }}>
+                Burn unavailable right now. Try again shortly.
+              </p>
             )}
             <div
               style={{
@@ -1028,7 +1148,7 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                   setAmount(lamportsToSol(maxBurnNow).replace(/,/g, ""))
                 }
               >
-                burn max
+                max
               </button>
               <button
                 className="btn primary"
@@ -1063,23 +1183,13 @@ export function VaultPage({ search }: { search: VaultSearch }) {
                 className="sub"
                 style={{ marginTop: 8, color: "var(--bad, #c0392b)" }}
               >
-                Max {capTotal !== null ? lamportsToSol(capTotal) : "?"} SOL —
-                the {legLabel(legCaps[overCapLeg.index].mint)} leg is the limit
-                (program refusal 6040).
+                Maximum per burn: {capTotal !== null ? lamportsToSol(capTotal) : "?"}{" "}
+                SOL.
               </p>
             )}
             {busy === "burn" && (
               <p className="sub" style={{ marginTop: 10 }}>
-                Burn request in flight — the service resolves references,
-                quotes each leg, simulates, and submits. Keyless: no co-signer
-                exists; on mainnet your wallet is the only signature the burn
-                needs.
-                {typeof health === "object" && health?.jupiter?.keyed === false
-                  ? " Jupiter access is UNKEYED (free tier): a burn typically lands in seconds; a rate-limit burst adds brief retries (~1.5-7s each). Set JUPITER_API_KEY on the service to raise the limit."
-                  : ""}{" "}
-                The browser stops waiting at{" "}
-                {Math.round(BURN_DEADLINE_MS / 1000)}s; if that happens the
-                service may still land the burn — watch the vault balance.
+                Preparing burn…
               </p>
             )}
           </div>
@@ -1089,6 +1199,9 @@ export function VaultPage({ search }: { search: VaultSearch }) {
               key={entry.at + "-" + i}
               entry={entry}
               decimals={decimals}
+              legs={legs}
+              tokenNames={tokenNames}
+              connection={connection}
             />
           ))}
         </div>
@@ -1100,16 +1213,85 @@ export function VaultPage({ search }: { search: VaultSearch }) {
 function Receipt({
   entry,
   decimals,
+  legs,
+  tokenNames,
+  connection,
 }: {
   entry: ReceiptEntry;
   decimals: Record<string, number>;
+  legs: readonly { mint: string; bps: number }[];
+  tokenNames: TokenNameMap;
+  connection: Connection;
 }) {
   const { receipt } = entry;
+  const [confirmedBurns, setConfirmedBurns] = useState<ReadonlyMap<string, string> | null>(
+    null
+  );
+  useEffect(() => {
+    if (receipt.status !== "submitted") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const targetMints = new Set(legs.map((leg) => leg.mint));
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const transaction = await connection.getParsedTransaction(
+          receipt.submissionId,
+          { commitment: "confirmed", maxSupportedTransactionVersion: 0 }
+        );
+        if (transaction?.meta && !transaction.meta.err) {
+          const totals = new Map<string, bigint>();
+          for (const group of transaction.meta.innerInstructions ?? []) {
+            for (const instruction of group.instructions) {
+              if (!("parsed" in instruction)) continue;
+              const parsed = instruction.parsed as {
+                type?: string;
+                info?: { mint?: string; tokenAmount?: { amount?: string } };
+              };
+              const mint = parsed.info?.mint;
+              const amount = parsed.info?.tokenAmount?.amount;
+              if (
+                parsed.type === "burnChecked" &&
+                mint &&
+                amount &&
+                targetMints.has(mint)
+              ) {
+                totals.set(mint, (totals.get(mint) ?? 0n) + BigInt(amount));
+              }
+            }
+          }
+          if (totals.size > 0 && !cancelled) {
+            setConfirmedBurns(
+              new Map([...totals].map(([mint, amount]) => [mint, amount.toString()]))
+            );
+            return;
+          }
+        }
+      } catch {
+        // A pending/expired provider cache is not a receipt error. Solscan is
+        // still the permanent transaction link and the on-chain floors remain
+        // truthful until parsed confirmation becomes available.
+      }
+      if (!cancelled && attempts < 12) timer = setTimeout(poll, 5_000);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [connection, receipt, legs]);
   if (receipt.status === "submitted") {
+    const legInputs = splitAmounts(
+      BigInt(entry.amount),
+      legs.map((leg) => leg.bps)
+    );
     return (
       <div className="panel receipt ok" style={{ padding: 0 }}>
         <div className="head">
-          <span className="status">SUBMITTED PRIVATELY</span>
+          <span className="status">
+            {confirmedBurns ? "BURN CONFIRMED" : "SUBMITTED"}
+          </span>
           <span
             className="mono"
             style={{ fontSize: 12, color: "var(--ink-2)" }}
@@ -1120,15 +1302,61 @@ function Receipt({
         </div>
         <div className="bodyrows">
           <div className="kv">
-            <dt>Relay submission</dt>
-            <dd>
-              {receipt.submissionId} <CopyButton value={receipt.submissionId} />
+            <dt>Transaction</dt>
+            <dd className="receipt-transaction">
+              <a
+                href={`https://solscan.io/tx/${receipt.submissionId}`}
+                target="_blank"
+                rel="noreferrer"
+                title={receipt.submissionId}
+              >
+                View on Solscan ↗
+              </a>
+              <span className="mono">{shortAddress(receipt.submissionId, 8)}</span>
+              <CopyButton value={receipt.submissionId} />
             </dd>
-            <dt>Message digest</dt>
-            <dd className="mono">{receipt.messageSha256}</dd>
             <dt>Input</dt>
             <dd>{lamportsToSol(entry.amount)} SOL</dd>
           </div>
+          <table className="data receipt-burns">
+            <thead>
+              <tr>
+                <th>Token burned</th>
+                <th className="num">SOL in</th>
+                <th className="num">
+                  {confirmedBurns ? "Burned" : "Minimum burn"}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {legs.map((leg, index) => (
+                <tr key={leg.mint}>
+                  <td>{legLabel(leg.mint, tokenNames)}</td>
+                  <td className="num">
+                    {lamportsToSol(legInputs[index] ?? 0n)}
+                  </td>
+                  <td className="num">
+                    {confirmedBurns?.get(leg.mint) !== undefined
+                      ? formatRaw(
+                          confirmedBurns.get(leg.mint)!,
+                          decimals[leg.mint] ?? null
+                        )
+                      : receipt.minimumOutputs[index] !== undefined
+                      ? formatRaw(
+                          receipt.minimumOutputs[index],
+                          decimals[leg.mint] ?? null
+                        )
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!confirmedBurns && (
+            <p className="receipt-note">
+              Minimum burn is the on-chain floor; exact amounts appear after confirmation.
+            </p>
+          )}
         </div>
       </div>
     );
@@ -1153,9 +1381,18 @@ function Receipt({
         </div>
         <div className="bodyrows">
           <div className="kv">
-            <dt>Signature</dt>
-            <dd>
-              {receipt.signature} <CopyButton value={receipt.signature} />
+            <dt>Transaction</dt>
+            <dd className="receipt-transaction">
+              <a
+                href={`https://solscan.io/tx/${receipt.signature}`}
+                target="_blank"
+                rel="noreferrer"
+                title={receipt.signature}
+              >
+                View on Solscan ↗
+              </a>
+              <span className="mono">{shortAddress(receipt.signature, 8)}</span>
+              <CopyButton value={receipt.signature} />
             </dd>
             <dt>Input</dt>
             <dd>{lamportsToSol(entry.amount)} SOL</dd>
@@ -1175,13 +1412,10 @@ function Receipt({
                 <tr key={i}>
                   {/* No map in this sub-component; the page above has
                       already populated the process-wide cache. */}
-                  <td>{legLabel(leg.mint)}</td>
+                  <td>{legLabel(leg.mint, tokenNames)}</td>
                   <td className="num">{lamportsToSol(leg.amountIn)}</td>
                   <td className="num">
-                    {formatRaw(leg.burned, decimals[leg.mint] ?? null)}{" "}
-                    <span style={{ color: "var(--ink-3)" }}>
-                      ({leg.burned} raw)
-                    </span>
+                    {formatRaw(leg.burned, decimals[leg.mint] ?? null)}
                   </td>
                 </tr>
               ))}
@@ -1274,7 +1508,9 @@ function Receipt({
           receipt.rejectedBy === "external" ||
           receipt.rejectedBy === "burner" ? (
             <div>
-              <p className="sub" style={{ margin: "8px 0 4px" }}>Raw detail</p>
+              <p className="sub" style={{ margin: "8px 0 4px" }}>
+                Raw detail
+              </p>
               <div className="logs">{receipt.logsTail.join("\n")}</div>
             </div>
           ) : (

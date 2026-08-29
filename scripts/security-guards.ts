@@ -33,7 +33,7 @@
  * Build applicability: these checks target the production Pinocchio program.
  *
  * Run:
- *   cd /Users/macm2/onchainburner && \
+ *   cd /path/to/onchainburner && \
  *   TS_NODE_TRANSPILE_ONLY=1 pnpm exec ts-node scripts/security-guards.ts
  *
  * Prove an assertion can fail (runs the NAMED gap in its benign configuration

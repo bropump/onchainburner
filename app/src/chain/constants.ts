@@ -69,22 +69,26 @@ export const KNOWN_TOKENS: {
     decimals: 6,
     note: "canonical PumpSwap pool, 1,426 SOL (measured 2026-08-28)",
   },
+  {
+    symbol: "CHILLHOUSE",
+    mint: "GkyPYa7NnCFbduLknCfBfP7p8564X1VZhwZYJ6CZpump",
+    decimals: 6,
+    note: "canonical PumpSwap pool, 2,993 SOL (measured 2026-08-29)",
+  },
   // MET is NOT a launchpad coin: its reference is an ADDRESS-BOUND Meteora
   // DLMM with transient positions, so its depth can be withdrawn and its
   // safety rests on curation, not on derivation. Listed because the owner
   // asked for it and it clears the gate today; it is not in the same class
   // as the two above.
-  // STNK: Raydium CP, 1,561 SOL, but ZERO locked LP and a 100 bps pool fee
-  // (4x the usual Raydium CP 25 bps). Address-bound and fully withdrawable,
-  // so it is the weakest class listed here -- fine as a target, but its
-  // reference depth can leave. Adding it surfaced a real bug: the resolver
-  // was labelling it `locked-lp` purely because the LP mint READ succeeded,
-  // with 0% actually burned. Fixed in markets.ts the same day.
+  // STNK initially had zero locked LP; that observation exposed and fixed a
+  // false-positive lock verdict. Its canonical Raydium CP now has 99.98% of
+  // LP in verified Burn & Earn custody (live 2026-08-29), while retaining the
+  // relatively high 100 bps pool fee.
   {
     symbol: "STNK",
     mint: "43VWkd99HjqkhFTZbWBpMpRhjG469nWa7x7uEsgSH7We",
     decimals: 6,
-    note: "Raydium CP, 1,561 SOL, 0% LP locked, 100 bps fee (measured 2026-08-28)",
+    note: "Raydium CP, 1,447 SOL, 99.98% Burn & Earn custody, 100 bps fee (measured 2026-08-29)",
   },
   {
     symbol: "MET",

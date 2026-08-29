@@ -14,7 +14,6 @@ import { splitAmounts } from "../chain/derive";
 
 /** The canonical small-test-burn size Mode A probes admission at. */
 export const PROBE_TOTAL_LAMPORTS = 50_000_000n;
-import { CheckRows, legLabel } from "../ui";
 
 export type LegDraft = {
   mint: string;
@@ -198,72 +197,4 @@ export function useAdmission(
   ]);
 
   return state;
-}
-
-export function AdmissionPanel({
-  admission,
-  launchExists,
-}: {
-  admission: AdmissionState;
-  launchExists: boolean;
-}) {
-  const targetChecks = admission.targets.flatMap((facts) =>
-    facts.checks.map((check) => ({
-      ...check,
-      label: `${legLabel(facts.address)} — ${check.label}`,
-    }))
-  );
-  const onChainRow: CheckResult[] = admission.onChain
-    ? [
-        admission.onChain.ok
-          ? {
-              id: "onchain",
-              label: "Deployed program verdict (validate_config)",
-              status: "pass" as const,
-              detail: "the burn's own admission code accepts this config",
-            }
-          : {
-              id: "onchain",
-              label: "Deployed program verdict (validate_config)",
-              status: "fail" as const,
-              code: admission.onChain.isBurner
-                ? admission.onChain.code
-                : undefined,
-              detail: admission.onChain.isBurner
-                ? `${
-                    admission.onChain.name ?? "rejected"
-                  } — simulated against the deployed program`
-                : `simulation failed externally (${
-                    admission.onChain.programId ?? "unknown program"
-                  })`,
-            },
-      ]
-    : launchExists
-    ? []
-    : [
-        {
-          id: "onchain",
-          label: "Deployed program verdict (validate_config)",
-          status: "info" as const,
-          detail:
-            "runs atomically inside the setup transaction — an inadmissible config reverts the whole setup, fee share included",
-        },
-      ];
-  return (
-    <div>
-      {admission.loading && (
-        <p className="sub">
-          <span className="spin" /> checking against the chain…
-        </p>
-      )}
-      <CheckRows
-        checks={[
-          ...admission.shape,
-          ...targetChecks,
-          ...(admission.curve?.checks ?? []),
-          ...onChainRow,
-        ]}
-      />
-    </div>
-  );
 }

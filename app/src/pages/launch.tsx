@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Keypair, SystemProgram } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import { useNavigate } from "@tanstack/react-router";
 import { useApp } from "../state/AppContext";
 import { deriveSplitPda, legsToParam, splitAmounts } from "../chain/derive";
@@ -38,6 +39,8 @@ import {
   MAX_METADATA_IMAGE_BYTES,
   METADATA_IMAGE_TYPES,
 } from "../chain/service";
+import { SETUP_LOOKUP_TABLE_ADDRESS } from "../config";
+import { loadSetupLookupTable } from "../chain/setupLookupTable";
 
 export function LaunchPage() {
   const {
@@ -58,6 +61,15 @@ export function LaunchPage() {
   const [telegram, setTelegram] = useState("");
   const [uri, setUri] = useState("");
   const [metadataImage, setMetadataImage] = useState<File | null>(null);
+  const [preparedMetadataImage, setPreparedMetadataImage] = useState<Awaited<
+    ReturnType<typeof service.prepareMetadataImage>
+  > | null>(null);
+  const [preparingMetadataImage, setPreparingMetadataImage] = useState(false);
+  const [metadataPreviewUrl, setMetadataPreviewUrl] = useState<string | null>(
+    null
+  );
+  const imagePrepareGeneration = useRef(0);
+  const previewUrlRef = useRef<string | null>(null);
   const [metadataDeliveryImageUri, setMetadataDeliveryImageUri] = useState<
     string | null
   >(null);
@@ -65,8 +77,7 @@ export function LaunchPage() {
   const [metadataUploadError, setMetadataUploadError] = useState<string | null>(
     null
   );
-  // Two things are choices: the POLICY (80/10/10 with $PUMP+NEIRO fixed, or
-  // and the creator's pick for the remainder. A
+  // The creator chooses the 90% target; NEIRO is the fixed 10% leg. A
   // pick that collides with a fixed leg is merged rather than emitted as a
   // duplicate the program would reject with 6034.
   const [vaultPolicy, setVaultPolicy] = useState<VaultPolicy>(DEFAULT_POLICY);
@@ -77,10 +88,15 @@ export function LaunchPage() {
   const [steps, setSteps] = useState<StepState[] | null>(null);
   const [running, setRunning] = useState(false);
 
+  useEffect(
+    () => () => {
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    },
+    []
+  );
+
   const mintAddress = mintKeypair.publicKey.toBase58();
-  // The 80% pick defaults to the token being launched — the flagship shape,
-  // and the only one whose setup fits a single transaction (1229B, versus
-  // 1261B and 29 bytes over the limit for a fourth distinct mint).
+  // The 90% pick defaults to the token being launched.
   const creatorMint = creatorMintOverride ?? mintAddress;
   const setCreatorMint = (value: string) => setCreatorMintOverride(value);
   const policy = buildPolicyLegs(creatorMint, vaultPolicy);
@@ -138,6 +154,8 @@ export function LaunchPage() {
     !policy.error &&
     name.trim().length > 0 &&
     symbol.trim().length > 0 &&
+    (!metadataImage || !!preparedMetadataImage) &&
+    !preparingMetadataImage &&
     !uploadingMetadata &&
     !running;
 
@@ -150,7 +168,11 @@ export function LaunchPage() {
     (leg) => !!refState.byMint[leg.mint]
   );
   const referencesSupported = referencesAreSupported(baseLegs, refState);
-  const readiness = running
+  const readiness = preparingMetadataImage
+    ? { text: "Compressing image on Cloudflare…", tone: "" }
+    : uploadingMetadata
+    ? { text: "Uploading final image and metadata…", tone: "" }
+    : running
     ? { text: "Launching…", tone: "" }
     : !name.trim() || !symbol.trim()
     ? { text: "Add a name and symbol.", tone: "" }
@@ -174,65 +196,101 @@ export function LaunchPage() {
     : { text: "Ready to launch.", tone: "ok" };
 
   function chooseMetadataImage(file: File | null) {
+    const generation = ++imagePrepareGeneration.current;
     setMetadataUploadError(null);
     setMetadataDeliveryImageUri(null);
+    setPreparedMetadataImage(null);
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+    setMetadataPreviewUrl(null);
     if (!file) {
       setMetadataImage(null);
+      setPreparingMetadataImage(false);
       return;
     }
     if (!(METADATA_IMAGE_TYPES as readonly string[]).includes(file.type)) {
       setMetadataImage(null);
+      setPreparingMetadataImage(false);
       setMetadataUploadError("Choose a PNG, JPEG, or WebP image.");
       return;
     }
     if (file.size > MAX_METADATA_IMAGE_BYTES) {
       setMetadataImage(null);
+      setPreparingMetadataImage(false);
       setMetadataUploadError(
-        `The image must be ${Math.round(MAX_METADATA_IMAGE_BYTES / 1_000_000)} MB or smaller.`
+        `The image must be ${Math.round(
+          MAX_METADATA_IMAGE_BYTES / 1_000_000
+        )} MB or smaller.`
       );
       return;
     }
     setMetadataImage(file);
+    setPreparingMetadataImage(true);
+    void (async () => {
+      try {
+        const prepared = await service.prepareMetadataImage(
+          new Uint8Array(await file.arrayBuffer()),
+          file.type as "image/png" | "image/jpeg" | "image/webp"
+        );
+        if (generation !== imagePrepareGeneration.current) return;
+        const previewBytes = new Uint8Array(prepared.image);
+        const previewUrl = URL.createObjectURL(
+          new Blob([previewBytes.buffer], { type: prepared.imageContentType })
+        );
+        previewUrlRef.current = previewUrl;
+        setPreparedMetadataImage(prepared);
+        setMetadataPreviewUrl(previewUrl);
+      } catch (error) {
+        if (generation !== imagePrepareGeneration.current) return;
+        setMetadataUploadError(
+          String((error as Error).message ?? error).slice(0, 300)
+        );
+      } finally {
+        if (generation === imagePrepareGeneration.current) {
+          setPreparingMetadataImage(false);
+        }
+      }
+    })();
   }
 
-  // The upload spends real money, so it fires at most once per selected
-  // file: the ref records the exact File we have already sent. Picking a
-  // file always yields a new File instance, so re-choosing re-uploads.
-  const autoUploadedFor = useRef<File | null>(null);
-  useEffect(() => {
-    if (!metadataImage || autoUploadedFor.current === metadataImage) return;
-    if (!name.trim() || !symbol.trim() || uploadingMetadata) return;
-    autoUploadedFor.current = metadataImage;
-    void uploadMetadata();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [metadataImage, name, symbol, uploadingMetadata]);
-
-  async function uploadMetadata() {
-    if (!metadataImage || !name.trim() || !symbol.trim()) return;
+  // Cloudflare normalization happens as soon as the image is selected. Irys
+  // writes are permanent and cost real money, so both the image and metadata
+  // are uploaded there only when the user presses Launch. The latest editable
+  // fields are frozen into that final JSON at that moment.
+  async function uploadMetadata(fields: {
+    name: string;
+    symbol: string;
+    description: string;
+    website: string;
+    twitter: string;
+    telegram: string;
+  }): Promise<string | null> {
+    if (!preparedMetadataImage || !fields.name || !fields.symbol) return null;
     setUploadingMetadata(true);
     setMetadataUploadError(null);
     try {
       const receipt = await service.uploadMetadata({
-        name: name.trim(),
-        symbol: symbol.trim(),
-        description: description.trim(),
+        name: fields.name,
+        symbol: fields.symbol,
+        description: fields.description,
         links: {
-          ...(website.trim() ? { website: website.trim() } : {}),
-          ...(twitter.trim() ? { twitter: twitter.trim() } : {}),
-          ...(telegram.trim() ? { telegram: telegram.trim() } : {}),
+          ...(fields.website ? { website: fields.website } : {}),
+          ...(fields.twitter ? { twitter: fields.twitter } : {}),
+          ...(fields.telegram ? { telegram: fields.telegram } : {}),
         },
-        image: new Uint8Array(await metadataImage.arrayBuffer()),
-        imageContentType: metadataImage.type as
-          | "image/png"
-          | "image/jpeg"
-          | "image/webp",
+        image: preparedMetadataImage.image,
+        imageContentType: preparedMetadataImage.imageContentType,
       });
       setUri(receipt.uri);
       setMetadataDeliveryImageUri(receipt.deliveryImageUri);
+      return receipt.uri;
     } catch (error) {
       setMetadataUploadError(
         String((error as Error).message ?? error).slice(0, 300)
       );
+      return null;
     } finally {
       setUploadingMetadata(false);
     }
@@ -240,27 +298,113 @@ export function LaunchPage() {
 
   async function run() {
     if (!wallet || !vault || !refState.ready) return;
-    const parsedLegs = legs.map((leg) => ({
+    // Freeze the complete immutable configuration before any irreversible
+    // upload or wallet prompt. React may re-render while Irys/RPC calls are in
+    // flight; no later read is allowed to substitute a new reference or PDA.
+    const snapshotFields = Object.freeze({
+      name: name.trim(),
+      symbol: symbol.trim(),
+      description: description.trim(),
+      website: website.trim(),
+      twitter: twitter.trim(),
+      telegram: telegram.trim(),
+    });
+    const snapshotLegs = legs.map((leg) =>
+      Object.freeze({
+        mint: leg.mint,
+        bps: leg.bps,
+        ...(leg.ref ? { ref: leg.ref } : {}),
+        referenceBlock: leg.referenceBlock
+          ? Object.freeze({ ...leg.referenceBlock })
+          : undefined,
+      })
+    );
+    const parsedLegs = snapshotLegs.map((leg) => ({
       mint: parseMint(leg.mint)!,
       bps: leg.bps,
       ref: leg.ref ? parseMint(leg.ref)! : undefined,
     }));
     const [pda] = deriveSplitPda(mintKeypair.publicKey, parsedLegs);
+    const snapshotVault = pda.toBase58();
+    if (snapshotVault !== vault) {
+      setMetadataUploadError(
+        "the displayed vault changed before launch; review the frozen configuration and retry"
+      );
+      return;
+    }
     setRunning(true);
     const plan: StepState[] = [
       {
-        label: `create_v2 — launch ${symbol.trim()} on Pump`,
+        label: `create_v2 — launch ${snapshotFields.symbol} on Pump`,
         status: "running",
       },
       { label: "setup", status: "idle" },
     ];
     setSteps([...plan]);
     try {
+      // Pump create_v2 deterministically creates the pending mint under
+      // Token-2022. Resolve that known owner now so every setup instruction is
+      // finalized before the first wallet prompt.
+      const resolved = (
+        await resolveLegs(connection, pda, parsedLegs, new Set([mintAddress]))
+      ).map((leg, i) => ({
+        ...leg,
+        referenceBlock: snapshotLegs[i].referenceBlock,
+      }));
+      const validateA = buildValidateConfigModeA(
+        pda,
+        mintKeypair.publicKey,
+        resolved,
+        splitAmounts(
+          PROBE_TOTAL_LAMPORTS,
+          resolved.map((leg) => leg.bps)
+        )
+      );
+      const ataIxs = buildAtaInstructions(wallet.publicKey, pda, resolved);
+      const feeShareIxs = await buildFeeShareInstructions({
+        creator: wallet.publicKey,
+        mint: mintKeypair.publicKey,
+        vault: pda,
+      });
+      if (!validateA.keys[0]?.pubkey.equals(pda)) {
+        throw new Error("validate_config was not built for the frozen vault");
+      }
+      const pdaBytes = Buffer.from(pda.toBytes());
+      if (!feeShareIxs.some((ix) => Buffer.from(ix.data).includes(pdaBytes))) {
+        throw new Error("Pump fee share was not encoded for the frozen vault");
+      }
+      const setupLookupTable = await loadSetupLookupTable(
+        connection,
+        SETUP_LOOKUP_TABLE_ADDRESS
+      );
+      const setupPlan = planSetupWithFeeShare(
+        wallet.publicKey,
+        feeShareIxs,
+        validateA,
+        ataIxs,
+        setupLookupTable ? [setupLookupTable] : []
+      );
+
+      let finalMetadataUri = uri.trim();
+      if (metadataImage) {
+        const uploadedUri = await uploadMetadata(snapshotFields);
+        if (!uploadedUri) {
+          plan[0] = {
+            ...plan[0],
+            status: "failed",
+            detail: "metadata upload failed; no transaction was signed",
+          };
+          setSteps([...plan]);
+          setRunning(false);
+          return;
+        }
+        finalMetadataUri = uploadedUri;
+      }
       const createIx = await buildCreateV2Instruction({
         mint: mintKeypair.publicKey,
-        name: name.trim(),
-        symbol: symbol.trim(),
-        uri: uri.trim(),
+        name: snapshotFields.name,
+        symbol: snapshotFields.symbol,
+        uri: finalMetadataUri,
         creator: wallet.publicKey,
       });
       // SURFPOOL DIVERGENCE (2026-08-26, demo only): a fresh fork's runtime
@@ -285,31 +429,6 @@ export function LaunchPage() {
       ]);
       plan[0] = { ...plan[0], status: "done", signature: createSig };
       setSteps([...plan]);
-
-      const resolved = (await resolveLegs(connection, pda, parsedLegs)).map(
-        (leg, i) => ({ ...leg, referenceBlock: legs[i].referenceBlock })
-      );
-      const validateA = buildValidateConfigModeA(
-        pda,
-        mintKeypair.publicKey,
-        resolved,
-        splitAmounts(
-          PROBE_TOTAL_LAMPORTS,
-          resolved.map((leg) => leg.bps)
-        )
-      );
-      const ataIxs = buildAtaInstructions(wallet.publicKey, pda, resolved);
-      const feeShareIxs = await buildFeeShareInstructions({
-        creator: wallet.publicKey,
-        mint: mintKeypair.publicKey,
-        vault: pda,
-      });
-      const setupPlan = planSetupWithFeeShare(
-        wallet.publicKey,
-        feeShareIxs,
-        validateA,
-        ataIxs
-      );
       plan.splice(
         1,
         1,
@@ -324,20 +443,19 @@ export function LaunchPage() {
         const signature = await sendWithWallet(
           connection,
           wallet,
-          setupPlan.transactions[i].instructions
+          setupPlan.transactions[i].instructions,
+          [],
+          setupPlan.transactions[i].lookupTables
         );
         plan[1 + i] = { ...plan[1 + i], status: "done", signature };
         setSteps([...plan]);
       }
-      // A multi-leg keyless burn cannot fit Solana's 1232-byte transaction
-      // with its 8 + 7·legs vault accounts inlined, so the creator makes a
-      // per-vault address lookup table now — paid and owned by this wallet
-      // (not the burn service) and reclaimable. If it fails the vault is
-      // still valid and the table can be made later from the vault page.
-      if (parsedLegs.length >= 2) {
+      // The tested 90/10 two-leg policy lands without a per-vault lookup table
+      // through the quote service's maxAccounts fitting ladder. Keep automatic
+      // lookup-table creation only for larger custom configurations.
+      if (parsedLegs.length >= 3) {
         plan.push({
-          label:
-            "create address lookup table (multi-leg burns need it to fit reliably)",
+          label: "create address lookup table (3+ leg burn)",
           status: "running",
         });
         setSteps([...plan]);
@@ -379,7 +497,7 @@ export function LaunchPage() {
           plan[plan.length - 1] = {
             ...plan[plan.length - 1],
             status: "failed",
-            detail: `the vault is set up and valid, but its lookup table was not created — make it later from the vault page before a multi-leg burn. ${String(
+            detail: `the vault is set up and valid, but its lookup table was not created — make it later from the vault page before a 3+ leg burn. ${String(
               (altError as Error).message ?? altError
             ).slice(0, 200)}`,
           };
@@ -387,10 +505,10 @@ export function LaunchPage() {
         }
       }
       saveVault({
-        label: symbol.trim(),
+        label: snapshotFields.symbol,
         launchMint: mintAddress,
-        legs: legs.map(({ mint, bps, ref }) => ({ mint, bps, ref })),
-        vault,
+        legs: snapshotLegs.map(({ mint, bps, ref }) => ({ mint, bps, ref })),
+        vault: snapshotVault,
         createdAt: Date.now(),
         feeShare: true,
       });
@@ -398,8 +516,8 @@ export function LaunchPage() {
         to: "/vault",
         search: {
           launch: mintAddress,
-          legs: legsToParam(legs),
-          label: symbol.trim(),
+          legs: legsToParam(snapshotLegs),
+          label: snapshotFields.symbol,
         },
       });
     } catch (error) {
@@ -443,7 +561,7 @@ export function LaunchPage() {
                   maxLength={32}
                   placeholder="My Token"
                   onChange={(event) => setName(event.target.value)}
-                  disabled={running}
+                  disabled={running || uploadingMetadata}
                 />
               </label>
               <label className="field">
@@ -456,7 +574,7 @@ export function LaunchPage() {
                   onChange={(event) =>
                     setSymbol(event.target.value.toUpperCase())
                   }
-                  disabled={running}
+                  disabled={running || uploadingMetadata}
                 />
               </label>
               <label className="field token-description">
@@ -519,27 +637,12 @@ export function LaunchPage() {
                     <span title={metadataImage.name}>
                       {metadataImage.name} ·{" "}
                       {metadataImage.size.toLocaleString()} bytes
-                      {uploadingMetadata
-                        ? " · compressing and uploading…"
-                        : uri
-                          ? " · uploaded"
-                          : !name.trim() || !symbol.trim()
-                            ? " · add a name and symbol to upload"
-                            : ""}
+                      {preparingMetadataImage
+                        ? " · compressing on Cloudflare…"
+                        : preparedMetadataImage
+                        ? ` · ${preparedMetadataImage.imageBytes.toLocaleString()} bytes ready — Irys finalizes on Launch`
+                        : " · image preparation failed"}
                     </span>
-                  )}
-                  {metadataImage && metadataUploadError && (
-                    <button
-                      type="button"
-                      className="btn small"
-                      onClick={() => {
-                        autoUploadedFor.current = metadataImage;
-                        void uploadMetadata();
-                      }}
-                      disabled={running || uploadingMetadata}
-                    >
-                      Retry upload
-                    </button>
                   )}
                 </div>
                 {metadataUploadError && (
@@ -547,10 +650,10 @@ export function LaunchPage() {
                     {metadataUploadError}
                   </p>
                 )}
-                {metadataDeliveryImageUri && (
+                {(metadataDeliveryImageUri || metadataPreviewUrl) && (
                   <img
                     className="metadata-upload-preview"
-                    src={metadataDeliveryImageUri}
+                    src={metadataDeliveryImageUri || metadataPreviewUrl || ""}
                     alt={`${name.trim() || symbol.trim()} token icon`}
                   />
                 )}
@@ -575,6 +678,11 @@ export function LaunchPage() {
             <div className="launch-step-head">
               <h2 id="launch-step-burn">What to burn</h2>
             </div>
+            <p className="sub launch-support-note">
+              Pump and supported Raydium AMM tokens can be bought and burned.
+              Selected CLMM and DLMM tokens qualify when their pools are deep
+              and established. Meteora DAMM v1 and v2 are not yet supported.
+            </p>
             <PolicyPicker
               policy={vaultPolicy}
               onPolicyChange={setVaultPolicy}
@@ -627,8 +735,20 @@ export function LaunchPage() {
               disabled={!canRun}
               onClick={run}
             >
-              {running ? "Launching…" : "Launch token"}
+              {preparingMetadataImage
+                ? "Preparing image…"
+                : uploadingMetadata
+                ? "Uploading metadata…"
+                : running
+                ? "Launching…"
+                : "Launch token"}
             </button>
+            <p className="launch-approval-note">
+              Expect 2 wallet approvals: one creates the Pump token and one
+              atomically validates and sets up its burn vault. If the setup
+              exceeds Solana&apos;s 1,232-byte transaction limit, it is safely
+              split and needs a third approval.
+            </p>
             {steps && (
               <div className="launch-progress">
                 <TxSteps steps={steps} />

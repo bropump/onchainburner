@@ -120,7 +120,9 @@ async function compress(request, env) {
 }
 
 async function deliverIrys(request, url, context) {
-  const match = url.pathname.match(/^\/irys\/([A-Za-z0-9_-]{43})$/);
+  const match = url.pathname.match(
+    /^\/irys\/(?:([A-Za-z0-9_-]{43})|([1-9A-HJ-NP-Za-km-z]{44}))$/
+  );
   if (!match || url.search || url.hash) return fixedResponse(404, "not found");
 
   const cache = caches.default;
@@ -128,18 +130,60 @@ async function deliverIrys(request, url, context) {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
-  const upstream = await fetch(`https://gateway.irys.xyz/${match[1]}`, {
-    redirect: "error",
-  });
+  const id = match[1] ?? match[2];
+  let upstreamUrl = new URL(`https://gateway.irys.xyz/${id}`);
+  let upstream;
+  for (let redirects = 0; redirects <= 2; redirects += 1) {
+    upstream = await fetch(upstreamUrl, { redirect: "manual" });
+    if (upstream.status < 300 || upstream.status >= 400) break;
+    const location = upstream.headers.get("location");
+    if (!location || redirects === 2) {
+      return fixedResponse(502, "permanent image is unavailable");
+    }
+    let next;
+    try {
+      next = new URL(location, upstreamUrl);
+    } catch {
+      return fixedResponse(502, "permanent image is unavailable");
+    }
+    // Irys currently redirects immutable gateway objects to its mainnet
+    // DataSprite CDN. Follow only that exact public asset shape: this keeps
+    // the endpoint from becoming an open redirect/SSRF fetcher.
+    if (
+      next.protocol !== "https:" ||
+      !/^[a-z2-7]+\.mainnet-1\.datasprite-cdn\.com$/.test(next.hostname) ||
+      (next.pathname !== `/${id}` && next.pathname !== `/${id}/`) ||
+      next.username ||
+      next.password ||
+      next.port ||
+      next.search ||
+      next.hash
+    ) {
+      return fixedResponse(502, "permanent image is unavailable");
+    }
+    upstreamUrl = next;
+  }
+  if (!upstream) return fixedResponse(502, "permanent image is unavailable");
   if (
     !upstream.ok ||
     !/^image\/webp\b/i.test(upstream.headers.get("content-type") ?? "")
   ) {
+    await upstream.body?.cancel();
     return fixedResponse(502, "permanent image is unavailable");
   }
-  const response = new Response(upstream.body, {
+  const declared = Number(upstream.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_OUTPUT_BYTES) {
+    await upstream.body?.cancel();
+    return fixedResponse(502, "permanent image is unavailable");
+  }
+  const bytes = await readBoundedBody(upstream.body, MAX_OUTPUT_BYTES);
+  if (!bytes?.byteLength || !isWebP(bytes)) {
+    return fixedResponse(502, "permanent image is unavailable");
+  }
+  const response = new Response(bytes, {
     headers: {
       "content-type": "image/webp",
+      "content-length": String(bytes.byteLength),
       "cache-control": "public, max-age=31536000, s-maxage=31536000, immutable",
       "access-control-allow-origin": "*",
       "x-content-type-options": "nosniff",

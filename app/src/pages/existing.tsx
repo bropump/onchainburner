@@ -1,9 +1,5 @@
 import { PolicyPicker, policyToLegs } from "./policyPicker";
-import {
-  buildPolicyLegs,
-  DEFAULT_POLICY,
-  VaultPolicy,
-} from "../chain/policy";
+import { buildPolicyLegs, DEFAULT_POLICY, VaultPolicy } from "../chain/policy";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useApp } from "../state/AppContext";
@@ -32,27 +28,23 @@ import {
   TxSteps,
 } from "../ui";
 import {
-  AdmissionPanel,
   LegDraft,
   parseMint,
   PROBE_TOTAL_LAMPORTS,
   useAdmission,
 } from "./configEditor";
 import { ReferencePanel, useLegReferences } from "./referencePanel";
+import { SETUP_LOOKUP_TABLE_ADDRESS } from "../config";
+import { loadSetupLookupTable } from "../chain/setupLookupTable";
 export function ExistingPage() {
   const { connection, wallet, saveVault, setVaultLookupTable } = useApp();
   const navigate = useNavigate();
   const [launchMint, setLaunchMint] = useState("");
-  // Policy: 80/10/10 ($PUMP + NEIRO fixed)
-  // fixed); the creator picks the remainder.
+  // Policy: creator-selected target 90%, NEIRO fixed at 10%.
   const [vaultPolicy, setVaultPolicy] = useState<VaultPolicy>(DEFAULT_POLICY);
   //
-  // The 80% pick DEFAULTS to the namespace token itself, for two reasons: it
-  // is what a creator almost always wants (burn your own token with the fees
-  // it earns), and it is the only shape whose setup fits one transaction —
-  // measured 1229B with the namespace as the pick versus 1261B (29 over the
-  // 1232 limit) with a fourth distinct mint, because the namespace mint is
-  // already an account in the transaction and reusing it costs only an ATA.
+  // The 90% pick defaults to the namespace token itself: burn the token whose
+  // creator fees fund this vault.
   const [creatorMintOverride, setCreatorMintOverride] = useState<string | null>(
     null
   );
@@ -190,17 +182,12 @@ export function ExistingPage() {
         vault,
         createdAt: Date.now(),
       });
-      // A 3+ leg keyless burn cannot fit Solana's 1232-byte transaction
-      // with the vault's 8 + 7·legs accounts inlined, and a 2-leg burn fits
-      // reliably only with the table (measured: uncapped routes fit 7/18,
-      // narrowed ones sometimes by 2 bytes), so the creator makes a
-      // per-vault address lookup table now (paid and owned by this wallet,
-      // not the burn service, and reclaimable). One extra transaction pair
-      // after the atomic setup; if it fails the vault is still valid and the
-      // table can be created later from the vault page.
-      if (parsedLegs.length >= 2) {
+      // Two-leg 90/10 burns use the service's measured maxAccounts fitting
+      // ladder and do not create a table. Larger custom configurations keep
+      // the creator-owned lookup-table fallback.
+      if (parsedLegs.length >= 3) {
         plan.push({
-          label: "create address lookup table (multi-leg burns need it to fit reliably)",
+          label: "create address lookup table (3+ leg burn)",
           status: "running",
         });
         setSteps([...plan]);
@@ -242,7 +229,7 @@ export function ExistingPage() {
           plan[plan.length - 1] = {
             ...plan[plan.length - 1],
             status: "failed",
-            detail: `the vault is set up and valid, but its lookup table was not created — make it later from the vault page before a multi-leg burn. ${String(
+            detail: `the vault is set up and valid, but its lookup table was not created — make it later from the vault page before a 3+ leg burn. ${String(
               (altError as Error).message ?? altError
             ).slice(0, 200)}`,
           };
@@ -311,11 +298,16 @@ export function ExistingPage() {
         (await connection.getAccountInfo(feeSharingConfigPda(parsedLaunch))) !==
         null;
       const feeShareIxs = configExists ? [shareIxs[1]] : shareIxs;
+      const setupLookupTable = await loadSetupLookupTable(
+        connection,
+        SETUP_LOOKUP_TABLE_ADDRESS
+      );
       const setupPlan = planSetupWithFeeShare(
         wallet.publicKey,
         feeShareIxs,
         validateA,
-        ataIxs
+        ataIxs,
+        setupLookupTable ? [setupLookupTable] : []
       );
       plan.splice(
         0,
@@ -332,7 +324,9 @@ export function ExistingPage() {
         const signature = await sendWithWallet(
           connection,
           wallet,
-          setupPlan.transactions[index].instructions
+          setupPlan.transactions[index].instructions,
+          [],
+          setupPlan.transactions[index].lookupTables
         );
         plan[index] = { ...plan[index], status: "done", signature };
         setFeeShareSteps([...plan]);
@@ -369,9 +363,9 @@ export function ExistingPage() {
         <h1>Create a vault for an existing token</h1>
         <p>
           Point your creator payments at a vault and it buys and burns the
-          tokens you choose, over and over, for as long as money keeps
-          arriving. Any SOL works — creator fees, trading fees, or someone
-          just sending it.
+          tokens you choose, over and over, for as long as money keeps arriving.
+          Any SOL works — creator fees, trading fees, or someone just sending
+          it.
         </p>
       </div>
 
@@ -431,14 +425,6 @@ export function ExistingPage() {
                 enter the launch mint and targets to derive the vault
               </p>
             )}
-          </div>
-
-          <div className="panel">
-            <h2>Admission</h2>
-            <AdmissionPanel
-              admission={admission}
-              launchExists={!!parsedLaunch}
-            />
           </div>
 
           <div className="panel">

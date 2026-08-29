@@ -19,6 +19,11 @@ import { ExistingPage } from "./pages/existing";
 import { VaultPage, VaultSearch } from "./pages/vault";
 import { WalletGate } from "./pages/walletGate";
 import { PROGRAM } from "./chain/constants";
+import {
+  CommunityLaunchPage,
+  CommunityVaultDetailPage,
+  CommunityVaultsPage,
+} from "./pages/communityVaults";
 
 const THEME_KEY = "onchainburner.theme";
 
@@ -36,41 +41,70 @@ function initialTheme(): "light" | "dark" {
 }
 
 function Shell() {
-  const onLaunch = useRouterState({
-    select: (state) => state.location.pathname === "/launch",
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
   });
+  const onLaunch = pathname === "/launch";
   const [theme, setTheme] = useState<"light" | "dark">(initialTheme);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => setMenuOpen(false), [pathname]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [menuOpen]);
 
   return (
     <div className="shell">
-      <header className="topbar">
-        <span className="wordmark">
-          ONCHAIN<em>BURNER</em>
-        </span>
-        <nav>
-          <Link
-            to="/"
-            activeOptions={{ exact: true }}
-            activeProps={{ className: "active" }}
-          >
-            Overview
-          </Link>
+      <header className={`topbar${menuOpen ? " menu-open" : ""}`}>
+        <Link to="/" className="brand" aria-label="Cooked home">
+          <img src="/cooked-flame.png" alt="" />
+          <span>Cooked</span>
+        </Link>
+        <nav id="primary-navigation" aria-label="Primary navigation">
           <Link to="/launch" activeProps={{ className: "active" }}>
             Launch
           </Link>
           <Link to="/existing" activeProps={{ className: "active" }}>
-            Existing token
+            Create vault
+          </Link>
+          <Link to="/community" activeProps={{ className: "active" }}>
+            Community
           </Link>
         </nav>
         <span className="spacer" />
-        <WalletGate />
+        <div className="topbar-wallet">
+          <WalletGate />
+        </div>
         <button
-          className="iconbtn"
-          title="Toggle theme"
+          className="header-iconbtn theme-toggle"
+          aria-label={`Use ${theme === "dark" ? "light" : "dark"} theme`}
+          title={`Use ${theme === "dark" ? "light" : "dark"} theme`}
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         >
-          {theme === "dark" ? "light" : "dark"}
+          <span aria-hidden="true">{theme === "dark" ? "☀" : "◐"}</span>
+          <span className="theme-label">
+            {theme === "dark" ? "Light mode" : "Dark mode"}
+          </span>
+        </button>
+        <button
+          className="header-iconbtn menu-toggle"
+          type="button"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={menuOpen}
+          aria-controls="primary-navigation"
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <span className="menu-lines" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
         </button>
       </header>
       <Outlet />
@@ -111,6 +145,30 @@ const existingRoute = createRoute({
   component: ExistingPage,
 });
 
+const communityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/community",
+  component: CommunityVaultsPage,
+});
+
+const communityLaunchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/community/launch/$mint",
+  component: function CommunityLaunchRouteComponent() {
+    const { mint } = communityLaunchRoute.useParams();
+    return <CommunityLaunchPage mint={mint} />;
+  },
+});
+
+const communityVaultRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/community/vault/$vault",
+  component: function CommunityVaultRouteComponent() {
+    const { vault } = communityVaultRoute.useParams();
+    return <CommunityVaultDetailPage vault={vault} />;
+  },
+});
+
 const vaultRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/vault",
@@ -130,6 +188,9 @@ const router = createRouter({
     indexRoute,
     launchRoute,
     existingRoute,
+    communityRoute,
+    communityLaunchRoute,
+    communityVaultRoute,
     vaultRoute,
   ]),
 });

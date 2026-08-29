@@ -1,6 +1,6 @@
 /**
  * Surfpool proof: Pump launch → real buys → distributeCreatorFeesV2 →
- * keyless split burn of NEIRO + KET, against program
+ * keyless 90/10 split burn of KET + NEIRO, against program
  * burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5.
  *
  * The fresh launch mint is the namespace only. Jupiter cannot index a mint
@@ -78,6 +78,12 @@ const PUMP_ROUTE_BUFFER = 5_000_000n;
 const PUMP_FUN_PROGRAM = new PublicKey(
   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 );
+const PUMP_SWAP_PROGRAM = new PublicKey(
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+);
+const INIT_USER_VOLUME_ACCUMULATOR = Buffer.from([
+  94, 6, 202, 115, 255, 96, 232, 183,
+]);
 const EXTEND_ACCOUNT = Buffer.from([234, 102, 194, 203, 150, 72, 62, 229]);
 const BPS_TOTAL = 10_000;
 const BUY_LAMPORTS = (process.env.PUMP_BUY_SOL ?? "5,10,25")
@@ -98,8 +104,11 @@ const POOL_ONLY_FORK_DEXES = [
 ];
 
 class ForkJupiter implements JupiterClient {
-  lastBuilds: Array<{ mint: string; setup: readonly JupiterInstruction[]; route: PublicKey[] }> =
-    [];
+  lastBuilds: Array<{
+    mint: string;
+    setup: readonly JupiterInstruction[];
+    route: PublicKey[];
+  }> = [];
   constructor(private readonly inner: JupiterClient) {}
   async build(params: JupiterBuildParams) {
     const excluded = new Set(params.excludeDexes ?? []);
@@ -145,6 +154,33 @@ function splitAmounts(total: bigint, bpsList: readonly number[]): bigint[] {
     allocated += amount;
   }
   return amounts;
+}
+
+function initUserVolumeAccumulatorIx(
+  program: PublicKey,
+  payer: PublicKey,
+  user: PublicKey
+): TransactionInstruction {
+  const [accumulator] = PublicKey.findProgramAddressSync(
+    [Buffer.from("user_volume_accumulator"), user.toBuffer()],
+    program
+  );
+  const [eventAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from("__event_authority")],
+    program
+  );
+  return new TransactionInstruction({
+    programId: program,
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: user, isSigner: false, isWritable: false },
+      { pubkey: accumulator, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: eventAuthority, isSigner: false, isWritable: false },
+      { pubkey: program, isSigner: false, isWritable: false },
+    ],
+    data: INIT_USER_VOLUME_ACCUMULATOR,
+  });
 }
 
 function payerFundedAtaSetup(
@@ -201,7 +237,13 @@ async function extendLiveBondingCurves(
     );
   }
   if (instructions.length) {
-    await sendPlain(connection, payer, instructions, [], "extend-bonding-curves");
+    await sendPlain(
+      connection,
+      payer,
+      instructions,
+      [],
+      "extend-bonding-curves"
+    );
   }
 }
 
@@ -248,7 +290,10 @@ async function prepayMissingRouteAtas(
     const routeKeys = build.swapInstruction.accounts.map(
       (account) => new PublicKey(account.pubkey)
     );
-    const infos = await connection.getMultipleAccountsInfo(routeKeys, "confirmed");
+    const infos = await connection.getMultipleAccountsInfo(
+      routeKeys,
+      "confirmed"
+    );
     for (const [index, info] of infos.entries()) {
       if (info) continue;
       const missing = routeKeys[index];
@@ -304,7 +349,10 @@ async function prepayMissingRouteAtas(
 
 class RpcSubmitter implements PrivateSubmitter {
   constructor(private readonly connection: Connection) {}
-  async submit(transaction: Uint8Array, _metadata: Readonly<Record<string, string>>) {
+  async submit(
+    transaction: Uint8Array,
+    _metadata: Readonly<Record<string, string>>
+  ) {
     const submissionId = await this.connection.sendRawTransaction(
       Buffer.from(transaction),
       { skipPreflight: false, preflightCommitment: "confirmed", maxRetries: 3 }
@@ -340,7 +388,9 @@ async function confirm(connection: Connection, signature: string) {
 async function sendPlain(
   connection: Connection,
   payer: Keypair,
-  instructions: ConstructorParameters<typeof TransactionMessage>[0]["instructions"],
+  instructions: ConstructorParameters<
+    typeof TransactionMessage
+  >[0]["instructions"],
   extra: Keypair[] = [],
   label = "tx"
 ) {
@@ -385,7 +435,9 @@ async function main() {
   const neiroRef = await resolveReference(chain, NEIRO, NEIRO_POOL);
   const ketRef = await resolveReference(chain, KET, undefined);
   console.log(
-    `NEIRO ${neiroRef.venue} ${neiroRef.pool.toBase58()} cap ${neiroRef.capLamports}`
+    `NEIRO ${neiroRef.venue} ${neiroRef.pool.toBase58()} cap ${
+      neiroRef.capLamports
+    }`
   );
   console.log(
     `KET ${ketRef.venue} ${ketRef.pool.toBase58()} cap ${ketRef.capLamports}`
@@ -413,8 +465,8 @@ async function main() {
   );
 
   const derivedLegs = [
-    { targetMint: NEIRO, bps: 5000, refSeed: neiroRef.seed },
-    { targetMint: KET, bps: 5000, refSeed: ketRef.seed },
+    { targetMint: KET, bps: 9000, refSeed: ketRef.seed },
+    { targetMint: NEIRO, bps: 1000, refSeed: neiroRef.seed },
   ];
   const vault = deriveVault(PROGRAM, mint.publicKey, derivedLegs);
   console.log(`launch ${mint.publicKey.toBase58()}`);
@@ -541,7 +593,8 @@ async function main() {
 
   const neiroInfo = await connection.getAccountInfo(NEIRO, "confirmed");
   const ketInfo = await connection.getAccountInfo(KET, "confirmed");
-  if (!neiroInfo || !ketInfo) throw new Error("NEIRO or KET mint missing on fork");
+  if (!neiroInfo || !ketInfo)
+    throw new Error("NEIRO or KET mint missing on fork");
   const wsolAta = getAssociatedTokenAddressSync(
     NATIVE_MINT,
     vault,
@@ -578,12 +631,9 @@ async function main() {
     "vault-atas"
   );
 
-  // Creator-fee dust on a 5 SOL buy is ~0.015 SOL — too small for a 2-leg
-  // Jupiter route that still has to pay rent for Pump setup accounts.
-  // Top up with a provenance-blind transfer (the vault is a System account;
-  // the program does not care how SOL arrived). The distribute above still
-  // proves Pump paid the vault.
-  const extra = BigInt(process.env.EXTRA_BURN_LAMPORTS ?? "200000000");
+  // Optional diagnostic top-up. The end-to-end proof runs with the default 0,
+  // so every lamport burned came from Pump's creator-fee distribution.
+  const extra = BigInt(process.env.EXTRA_BURN_LAMPORTS ?? "0");
   if (extra > 0n) {
     await sendPlain(
       connection,
@@ -601,20 +651,60 @@ async function main() {
   }
   const vaultFunded = BigInt(await connection.getBalance(vault, "confirmed"));
   const spendable =
-    vaultFunded > VAULT_RENT_FLOOR ? vaultFunded - VAULT_RENT_FLOOR : vaultFunded;
+    vaultFunded > VAULT_RENT_FLOOR
+      ? vaultFunded - VAULT_RENT_FLOOR
+      : vaultFunded;
   if (spendable < 10_000_000n) {
     throw new Error(`vault spendable ${spendable} is dust`);
   }
 
+  // Pre-pay Pump's per-user bookkeeping outside the burn. Pump may close and
+  // refund these accounts during the route; the burner validates that exact
+  // credit without weakening lamport conservation.
+  const accumulatorIxs: TransactionInstruction[] = [];
+  for (const pumpProgram of [PUMP_FUN_PROGRAM, PUMP_SWAP_PROGRAM]) {
+    const [accumulator] = PublicKey.findProgramAddressSync(
+      [Buffer.from("user_volume_accumulator"), vault.toBuffer()],
+      pumpProgram
+    );
+    if (!(await connection.getAccountInfo(accumulator, "confirmed"))) {
+      accumulatorIxs.push(
+        initUserVolumeAccumulatorIx(pumpProgram, payer.publicKey, vault)
+      );
+    }
+  }
+  if (accumulatorIxs.length) {
+    await sendPlain(
+      connection,
+      payer,
+      accumulatorIxs,
+      [],
+      "init-vault-pump-accumulators"
+    );
+  }
+
+  const forkJupiter = new ForkJupiter(
+    new JupiterV2HttpClient(
+      process.env.JUPITER_V2_URL ?? "https://api.jup.ag/swap/v2/",
+      process.env.JUPITER_API_KEY
+    )
+  );
+  const legAmounts = splitAmounts(spendable, [9000, 1000]);
+  await prepayMissingRouteAtas(
+    connection,
+    payer,
+    vault,
+    [
+      { mint: KET, tokenProgram: ketInfo.owner, amount: legAmounts[0] },
+      { mint: NEIRO, tokenProgram: neiroInfo.owner, amount: legAmounts[1] },
+    ],
+    forkJupiter
+  );
+
   const service = new QuoteService({
     burnerProgram: PROGRAM,
     chain,
-    jupiter: new ForkJupiter(
-      new JupiterV2HttpClient(
-        process.env.JUPITER_V2_URL ?? "https://api.jup.ag/swap/v2/",
-        process.env.JUPITER_API_KEY
-      )
-    ),
+    jupiter: forkJupiter,
     feePayerSigner: new LocalKeypairMessageSigner(payer),
     submitter: new RpcSubmitter(connection),
     leaseStore: new InMemoryVaultLeaseStore(),
@@ -641,12 +731,12 @@ async function main() {
         launchMint: mint.publicKey.toBase58(),
         amountIn: spendable.toString(),
         legs: [
+          { targetMint: KET.toBase58(), bps: 9000 },
           {
             targetMint: NEIRO.toBase58(),
-            bps: 5000,
+            bps: 1000,
             reference: NEIRO_POOL.toBase58(),
           },
-          { targetMint: KET.toBase58(), bps: 5000 },
         ],
       });
       lastError = undefined;
@@ -654,7 +744,9 @@ async function main() {
     } catch (error) {
       lastError = error;
       const text = String((error as Error).message ?? error);
-      console.log(`  burn attempt ${attempt + 1} failed: ${text.slice(0, 180)}`);
+      console.log(
+        `  burn attempt ${attempt + 1} failed: ${text.slice(0, 180)}`
+      );
       await new Promise((r) => setTimeout(r, 8_000 * (attempt + 1)));
     }
   }
@@ -685,7 +777,7 @@ async function main() {
       2
     )
   );
-  console.log("PASS launch + buy + distribute + NEIRO/KET burn");
+  console.log("PASS launch + buy + distribute + KET 90 / NEIRO 10 burn");
 }
 
 main().catch((error) => {

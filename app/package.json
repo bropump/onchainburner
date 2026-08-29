@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "e2e": "tsx e2e/headless.ts",
     "test:worker-security": "node --import tsx e2e/worker-security.ts",
+    "test:community-indexer": "node --import tsx e2e/community-indexer.ts",
+    "test:setup-lut": "node --import tsx e2e/setup-lut.ts",
     "test:service-contract": "tsx e2e/service-contract.ts",
     "deploy": "pnpm build && wrangler deploy"
   },
@@ -30,12 +32,19 @@
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
-    "@types/node": "^22.10.0"
+    "@types/node": "^22.10.0",
+    "wrangler": "4.127.1"
   },
   "imports": {
     "#pump-sdk": {
       "browser": "./src/chain/pumpsdk.browser.ts",
       "default": "./src/chain/pumpsdk.node.ts"
+    }
+  },
+  "pnpm": {
+    "overrides": {
+      "axios@<1.18.0": "1.20.0",
+      "uuid@<11.1.1": "11.1.1"
     }
   }
 }

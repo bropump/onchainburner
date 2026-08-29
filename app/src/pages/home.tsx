@@ -165,6 +165,14 @@ export function HomePage() {
           </p>
           <span className="go">create a vault →</span>
         </Link>
+        <Link to="/community" className="card" style={{ textDecoration: "none" }}>
+          <h3>Community vault rankings</h3>
+          <p>
+            See every token community burned by the program, ranked by SOL
+            committed, token supply destroyed, and completed burns.
+          </p>
+          <span className="go">view rankings →</span>
+        </Link>
       </div>
 
       {vaults.length > 0 && (

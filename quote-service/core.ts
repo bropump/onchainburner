@@ -1204,7 +1204,8 @@ export class InMemoryVaultLeaseStore implements VaultLeaseStore {
         if (!released && outcome === "submitted") {
           this.submittedRequestIds.add(requestId);
           const timer = setTimeout(deleteIfStillOurs, ttlMs);
-          timer.unref();
+          // Node timers expose unref(); Web-standard Worker timers do not.
+          (timer as unknown as { unref?: () => void }).unref?.();
         }
         released = true;
       },

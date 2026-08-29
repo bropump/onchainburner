@@ -303,6 +303,18 @@ export function isSupportedReference(
   if (candidate.durability === "protocol-owned") return true;
   if (candidate.durability === "burned") return true;
   if (candidate.durability === "locked-by-custody") return true;
+  // Position liquidity is not represented by one fungible LP mint. For the
+  // two position venues the burner can authenticate and price, the product
+  // policy is therefore the independently authenticated, deepest qualifying
+  // pool selected by the service (with the oldest trustworthy open time as
+  // the tie-break), not a made-up pool-wide "locked percentage". The on-chain
+  // 50 SOL gate and immutable reference-address binding still apply.
+  if (
+    candidate.venue === "Raydium CLMM" ||
+    candidate.venue === "Meteora DLMM"
+  ) {
+    return candidate.meetsDepthFloor && !candidate.rejected;
+  }
   return WITHDRAWABLE_ALLOWED.includes(mint);
 }
 
@@ -337,6 +349,12 @@ function lockText(candidate: MarketCandidate): string {
       ? "LOCKED"
       : `LOCKED ${candidate.lockedPct.toFixed(1)}%`;
   }
+  if (
+    candidate.venue === "Raydium CLMM" ||
+    candidate.venue === "Meteora DLMM"
+  ) {
+    return "POSITION POOL";
+  }
   if (candidate.durability === "not-locked") return "NOT LOCKED";
   return "UNVERIFIED";
 }
@@ -363,22 +381,34 @@ function ReferenceFacts({
   mint,
   candidate,
   waiting,
+  issue,
 }: {
   mint: string;
   candidate?: MarketCandidate;
   waiting: boolean;
+  issue?: string;
 }) {
   const supported = !!candidate && referencePasses(mint, candidate);
+  const transientFailure =
+    !candidate &&
+    !waiting &&
+    !!issue &&
+    /timed out|unreachable|rate limit|\b429\b|\b5\d\d\b/i.test(issue);
   return (
     <>
       <div className="reference-fact">
         <span>Pool</span>
         <strong title={candidate?.pool}>
           {candidate
-            ? `${candidate.venue.replace(" (created by this launch)", "")} · ${shortAddress(candidate.pool, 4)}`
+            ? `${candidate.venue.replace(
+                " (created by this launch)",
+                ""
+              )} · ${shortAddress(candidate.pool, 4)}`
             : waiting
-              ? "Checking…"
-              : "No qualifying pool"}
+            ? "Checking…"
+            : transientFailure
+            ? "Check unavailable"
+            : "No qualifying pool"}
         </strong>
       </div>
       <div className="reference-fact">
@@ -392,17 +422,32 @@ function ReferenceFacts({
           candidate?.durability === "locked-by-custody"
             ? " ok"
             : candidate
-              ? " warn"
-              : ""
+            ? " warn"
+            : ""
         }`}
       >
         <span>Liquidity</span>
         <strong>{candidate ? lockText(candidate) : "—"}</strong>
       </div>
-      <div className={`reference-fact${supported ? " ok" : waiting ? "" : " err"}`}>
+      <div
+        className={`reference-fact${supported ? " ok" : waiting ? "" : " err"}`}
+      >
         <span>Verdict</span>
-        <strong>{waiting ? "CHECKING" : supported ? "SUPPORTED" : "NOT SUPPORTED"}</strong>
+        <strong>
+          {waiting
+            ? "CHECKING"
+            : supported
+            ? "SUPPORTED"
+            : transientFailure
+            ? "RETRY CHECK"
+            : "NOT SUPPORTED"}
+        </strong>
       </div>
+      {!waiting && (candidate?.rejected || (!candidate && issue)) && (
+        <p className={`reference-check-message${transientFailure ? " retry" : ""}`}>
+          {candidate?.rejected ?? issue}
+        </p>
+      )}
     </>
   );
 }
@@ -445,8 +490,13 @@ export function ReferencePanel({
     : -1;
   if (hierarchy && primaryIndex >= 0) {
     const primaryLeg = legs[primaryIndex];
-    const primaryCandidate = state.legReferences[primaryIndex]?.candidate;
-    const primaryWaiting = state.loading && !primaryCandidate;
+    const primarySelection = state.byMint[primaryLeg.mint];
+    const primaryCandidate =
+      state.legReferences[primaryIndex]?.candidate ??
+      primarySelection?.candidates.find(
+        (candidate) => candidate.venue === "Meteora DAMM v2"
+      );
+    const primaryWaiting = state.loading && !primarySelection;
     const primaryLabel =
       labels[primaryLeg.mint] || legLabel(primaryLeg.mint, tokenNames);
     const primaryName =
@@ -476,10 +526,14 @@ export function ReferencePanel({
                 <div>
                   <strong>{primaryName}</strong>
                   {primarySymbol && primarySymbol !== primaryName && (
-                    <span className="reference-primary-symbol">{primarySymbol}</span>
+                    <span className="reference-primary-symbol">
+                      {primarySymbol}
+                    </span>
                   )}
                 </div>
-                <code title={primaryLeg.mint}>{shortAddress(primaryLeg.mint, 7)}</code>
+                <code title={primaryLeg.mint}>
+                  {shortAddress(primaryLeg.mint, 7)}
+                </code>
               </div>
             </div>
             <div className="reference-primary-weight">
@@ -489,8 +543,8 @@ export function ReferencePanel({
           </div>
           {mergedFixedLeg && (
             <div className="reference-primary-merged">
-              {primaryLeg.bps / 100}% submitted as one binding · includes the fixed{" "}
-              {mergedFixedLeg.symbol} {mergedFixedLeg.bps / 100}% leg
+              {primaryLeg.bps / 100}% submitted as one binding · includes the
+              fixed {mergedFixedLeg.symbol} {mergedFixedLeg.bps / 100}% leg
             </div>
           )}
           <div className="reference-primary-facts">
@@ -498,11 +552,15 @@ export function ReferencePanel({
               mint={primaryLeg.mint}
               candidate={primaryCandidate}
               waiting={primaryWaiting}
+              issue={!primaryCandidate ? primarySelection?.pickReason : undefined}
             />
           </div>
         </section>
 
-        <section className="reference-fixed" aria-label="Fixed platform fee legs">
+        <section
+          className="reference-fixed"
+          aria-label="Fixed platform fee legs"
+        >
           <div className="reference-fixed-head">
             <strong>Fixed platform fee legs</strong>
             <span>10% each</span>
@@ -511,13 +569,18 @@ export function ReferencePanel({
             {hierarchy.fixedLegs.map((fixed) => {
               const legIndex = legs.findIndex((leg) => leg.mint === fixed.mint);
               const leg = legIndex >= 0 ? legs[legIndex] : undefined;
+              const selection = leg ? state.byMint[leg.mint] : undefined;
               const candidate =
                 legIndex >= 0
-                  ? state.legReferences[legIndex]?.candidate
+                  ? state.legReferences[legIndex]?.candidate ??
+                    selection?.candidates.find(
+                      (entry) => entry.venue === "Meteora DAMM v2"
+                    )
                   : undefined;
-              const waiting = state.loading && !candidate;
+              const waiting = state.loading && !selection;
               const merged = fixed.mint === hierarchy.creatorMint;
-              const supported = !!candidate && referencePasses(fixed.mint, candidate);
+              const supported =
+                !!candidate && referencePasses(fixed.mint, candidate);
 
               if (merged && leg) {
                 return (
@@ -526,17 +589,13 @@ export function ReferencePanel({
                       <strong>{fixed.symbol}</strong>
                       <span className="mono">{fixed.bps / 100}%</span>
                     </div>
-                    <span>
-                      Included in the {leg.bps / 100}% binding above
-                    </span>
-                    <strong
-                      className={supported ? "ok" : waiting ? "" : "err"}
-                    >
+                    <span>Included in the {leg.bps / 100}% binding above</span>
+                    <strong className={supported ? "ok" : waiting ? "" : "err"}>
                       {waiting
                         ? "CHECKING"
                         : supported
-                          ? "SUPPORTED"
-                          : "NOT SUPPORTED"}
+                        ? "SUPPORTED"
+                        : "NOT SUPPORTED"}
                     </strong>
                   </div>
                 );
@@ -545,7 +604,7 @@ export function ReferencePanel({
               // ONE LINE, deliberately. These legs are FIXED: the creator did
               // not choose them and cannot change them, so pool address and SOL
               // depth are detail they can do nothing about -- noise next to the
-              // 80% pick, which is the actual decision on this page.
+              // 90% pick, which is the actual decision on this page.
               //
               // The VERDICT still shows, and that is not negotiable: an
               // unsupported fixed leg blocks the launch, and the creator is
@@ -561,11 +620,14 @@ export function ReferencePanel({
                     {candidate ? candidate.venue : waiting ? "checking" : ""}
                   </span>
                   <strong className={supported ? "ok" : waiting ? "" : "err"}>
-                    {waiting ? "CHECKING" : supported ? "SUPPORTED" : "NOT SUPPORTED"}
+                    {waiting
+                      ? "CHECKING"
+                      : supported
+                      ? "SUPPORTED"
+                      : "NOT SUPPORTED"}
                   </strong>
                 </div>
               );
-
             })}
           </div>
         </section>
@@ -577,18 +639,26 @@ export function ReferencePanel({
   return (
     <div className="reference-list" aria-label="Reference pool support">
       {legs.map((leg, index) => {
-        const candidate = state.legReferences[index]?.candidate;
-        const waiting = state.loading && !candidate;
+        const selection = state.byMint[leg.mint];
+        const candidate =
+          state.legReferences[index]?.candidate ??
+          selection?.candidates.find(
+            (entry) => entry.venue === "Meteora DAMM v2"
+          );
+        const waiting = state.loading && !selection;
         return (
           <div className="reference-row" key={leg.mint}>
             <div className="reference-token">
-              <strong>{labels[leg.mint] || legLabel(leg.mint, tokenNames)}</strong>
+              <strong>
+                {labels[leg.mint] || legLabel(leg.mint, tokenNames)}
+              </strong>
               <span className="mono">{leg.bps / 100}%</span>
             </div>
             <ReferenceFacts
               mint={leg.mint}
               candidate={candidate}
               waiting={waiting}
+              issue={!candidate ? selection?.pickReason : undefined}
             />
           </div>
         );

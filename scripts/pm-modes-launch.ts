@@ -51,11 +51,10 @@ const {
   getTokenVaultPda,
 } = require("@pump-fun/pump-sdk");
 
-// agent-payments-sdk is a transitive dependency of pump-sdk under pnpm's
-// virtual store; load it from there (it is not hoisted to the root).
-const AGENT_SDK_PATH =
-  "/Users/macm2/onchainburner/node_modules/.pnpm/@pump-fun+pump-sdk@1.36.0_bufferutil@4.1.0_fastestsmallesttextencoderdecoder@1.0.22_typ_2a51525523c834db4299d13b9783a5bd/node_modules/@pump-fun/agent-payments-sdk";
-const { PumpAgentOffline, getTokenAgentPaymentsPDA } = require(AGENT_SDK_PATH);
+const {
+  PumpAgentOffline,
+  getTokenAgentPaymentsPDA,
+} = require("@pump-fun/agent-payments-sdk");
 
 const PUMP_FUN = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const USDC = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");

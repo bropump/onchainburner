@@ -1,9 +1,8 @@
 /**
  * Cloudflare Worker fronting the static app.
  *
- * Its only job beyond serving assets is `POST /rpc`: a narrow Solana JSON-RPC
- * proxy that holds the upstream endpoint (which carries an API key) as a
- * SERVER-SIDE secret.
+ * Beyond serving assets it exposes a narrow Solana JSON-RPC proxy at `/rpc`
+ * and the private quote-service binding at `/api`.
  *
  * Why this exists at all: the app previously read its RPC endpoint from
  * `VITE_RPC_URL`, and Vite inlines `VITE_*` into the JavaScript bundle at
@@ -16,21 +15,21 @@
  * what this app actually calls, and nothing else is forwarded.
  */
 
-interface Env {
-  /** Full upstream RPC URL including any key. Set with `wrangler secret put`. */
-  SOLANA_RPC_URL?: string;
-  /**
-   * Origin of the quote service, e.g. https://burn-service.example. When set,
-   * `/api/*` is proxied there with the `/api` prefix stripped. When absent,
-   * `/api/*` returns a JSON 503 rather than falling through to the SPA.
-   */
-  BURN_SERVICE_ORIGIN?: string;
-  ASSETS: { fetch: (request: Request) => Promise<Response> };
-  RPC_LIMITER?: { limit: (o: { key: string }) => Promise<{ success: boolean }> };
-  API_LIMITER?: { limit: (o: { key: string }) => Promise<{ success: boolean }> };
-}
+import {
+  communityLeaderboard,
+  communityLaunchSummary,
+  communityVaultSummary,
+  indexFinalizedBurns,
+} from "./community-indexer";
 
-type RateLimiter = Env["RPC_LIMITER"];
+type AppEnv = Pick<Env, "SOLANA_RPC_URL" | "COMMUNITY_DB"> & {
+  BURN_SERVICE?: Pick<Fetcher, "fetch">;
+  ASSETS: Pick<Fetcher, "fetch">;
+  RPC_LIMITER?: Pick<RateLimit, "limit">;
+  API_LIMITER?: Pick<RateLimit, "limit">;
+};
+
+type RateLimiter = AppEnv["RPC_LIMITER"];
 
 /** Client IP as Cloudflare sees it. Absent only outside the CF edge. */
 function clientKey(request: Request): string {
@@ -101,6 +100,21 @@ const ALLOWED_METHODS = new Set([
   "sendTransaction",
   "getVersion",
 ]);
+
+/**
+ * Rate-limit units reflect provider cost, not merely JSON-RPC object count.
+ * Pool enumeration is intentionally expensive: one filtered
+ * getProgramAccounts must not cost the same as one getSlot.
+ */
+const RPC_METHOD_UNITS: Readonly<Record<string, number>> = {
+  getProgramAccounts: 20,
+  simulateTransaction: 5,
+  sendTransaction: 5,
+  getTransaction: 3,
+  getTokenLargestAccounts: 2,
+  getMultipleAccounts: 2,
+};
+const MAX_RPC_UNITS_PER_REQUEST = 120;
 
 /** A single JSON-RPC request body is small; a batch of them is still small. */
 const MAX_BODY_BYTES = 256 * 1024;
@@ -180,9 +194,18 @@ function jsonError(code: string, message: string, status: number): Response {
   });
 }
 
-function jsonRpcError(id: unknown, code: number, message: string, status = 400) {
+function jsonRpcError(
+  id: unknown,
+  code: number,
+  message: string,
+  status = 400
+) {
   return new Response(
-    JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: id ?? null,
+      error: { code, message },
+    }),
     { status, headers: { "content-type": "application/json" } }
   );
 }
@@ -200,6 +223,46 @@ function rejectReason(call: unknown): string | null {
   if (typeof method !== "string") return "missing method";
   if (!ALLOWED_METHODS.has(method)) return `method not allowed: ${method}`;
   return null;
+}
+
+function rpcUnits(call: unknown): number {
+  const method = (call as { method: string }).method;
+  return RPC_METHOD_UNITS[method] ?? 1;
+}
+
+const SECURITY_HEADERS: Readonly<Record<string, string>> = {
+  "content-security-policy": [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:",
+    "connect-src 'self' https: wss:",
+    "worker-src 'self' blob:",
+    "frame-src https:",
+    "manifest-src 'self'",
+  ].join("; "),
+  "cross-origin-opener-policy": "same-origin-allow-popups",
+  "permissions-policy": "camera=(), geolocation=(), microphone=()",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+};
+
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 /** Read at most maxBytes from the wire; never buffer an unbounded body. */
@@ -241,7 +304,11 @@ function rpcSecretPatterns(rawUrl: string): Uint8Array[] {
   try {
     const url = new URL(rawUrl);
     candidates.add(url.href);
-    for (const value of [url.username, url.password, ...url.searchParams.values()]) {
+    for (const value of [
+      url.username,
+      url.password,
+      ...url.searchParams.values(),
+    ]) {
       if (value.length >= 6) candidates.add(value);
     }
     for (const label of url.hostname.split(".")) {
@@ -359,7 +426,7 @@ function safeRpcResponseBody(
 
 async function handleRpc(
   request: Request,
-  env: Env,
+  env: AppEnv,
   initialRateUnitConsumed: boolean
 ): Promise<Response> {
   if (request.method !== "POST") {
@@ -405,9 +472,22 @@ async function handleRpc(
     }
   }
 
-  // The edge consumed one unit before reading the body. Consume the rest so a
-  // 100-call JSON-RPC batch costs 100 units, not one.
-  const remainingUnits = calls.length - (initialRateUnitConsumed ? 1 : 0);
+  const requestedUnits = calls.reduce(
+    (total, call) => total + rpcUnits(call),
+    0
+  );
+  if (requestedUnits > MAX_RPC_UNITS_PER_REQUEST) {
+    return jsonRpcError(
+      null,
+      -32600,
+      `request cost ${requestedUnits} exceeds ${MAX_RPC_UNITS_PER_REQUEST}`,
+      413
+    );
+  }
+
+  // The edge consumed one unit before reading the body. Consume the weighted
+  // remainder, so an expensive pool scan cannot masquerade as a cheap call.
+  const remainingUnits = requestedUnits - (initialRateUnitConsumed ? 1 : 0);
   if (remainingUnits > 0) {
     const limited = await rateLimited(env.RPC_LIMITER, request, remainingUnits);
     if (limited) return limited;
@@ -498,13 +578,12 @@ async function handleRpc(
  * until something tried to use a field. Answer in JSON, with a status that
  * means what it says.
  */
-async function handleApi(request: Request, env: Env): Promise<Response> {
-  if (!env.BURN_SERVICE_ORIGIN) {
+async function handleApi(request: Request, env: AppEnv): Promise<Response> {
+  if (!env.BURN_SERVICE) {
     return new Response(
       JSON.stringify({
         code: "BURN_SERVICE_NOT_CONFIGURED",
-        message:
-          "the burn service is not configured on this deployment; set BURN_SERVICE_ORIGIN",
+        message: "the burn service is not configured on this deployment",
       }),
       { status: 503, headers: { "content-type": "application/json" } }
     );
@@ -513,110 +592,132 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     return jsonError("METHOD_NOT_ALLOWED", "method not allowed", 405);
   }
 
-  const configured = env.BURN_SERVICE_ORIGIN.replace(/\/$/, "");
-  let base: URL;
-  try {
-    base = new URL(configured);
-  } catch {
-    return jsonError(
-      "BURN_SERVICE_MISCONFIGURED",
-      "the burn service is unavailable",
-      503
-    );
-  }
-  const localHttp =
-    base.protocol === "http:" &&
-    (base.hostname === "localhost" || base.hostname === "127.0.0.1");
-  if (
-    base.origin !== configured ||
-    (base.protocol !== "https:" && !localHttp) ||
-    base.username ||
-    base.password
-  ) {
-    return jsonError(
-      "BURN_SERVICE_MISCONFIGURED",
-      "the burn service is unavailable",
-      503
-    );
-  }
   const url = new URL(request.url);
 
-  // Build the target from the configured origin and a path that cannot
-  // change the host.
-  //
-  // Resolving the client path against the origin directly is an SSRF: for
-  // `/api//evil.example/x` the remainder is `//evil.example/x`, which is a
-  // PROTOCOL-RELATIVE url, so new URL() keeps only the base's scheme and
-  // sends the request — with headers — to evil.example. Verified before this
-  // fix. Collapsing leading slashes removes that, and the origin is asserted
-  // afterwards so any future parsing surprise fails closed rather than
-  // silently forwarding somewhere else.
+  // Service-binding URLs are routing labels, not public network destinations.
+  // Still collapse leading slashes so the downstream sees one unambiguous
+  // pathname and can never parse a protocol-relative URL differently.
   const suffix = url.pathname.slice("/api".length).replace(/^\/+/, "/");
-  const target = new URL(base.origin);
+  const target = new URL("https://quote-service.internal");
   target.pathname = suffix || "/";
   target.search = url.search;
-  if (target.origin !== base.origin) {
-    return new Response(
-      JSON.stringify({ code: "BAD_GATEWAY", message: "refusing to proxy" }),
-      { status: 502, headers: { "content-type": "application/json" } }
-    );
-  }
 
   // Forward only what the service needs. Passing request.headers wholesale
-  // sends the visitor's cookies, Authorization, Referer, X-Forwarded-For and
-  // arbitrary CF-* headers to a third-party origin. Origin is intentionally
-  // retained because the paid metadata endpoint validates it.
+  // sends the visitor's cookies, Authorization, Referer, and arbitrary CF-*
+  // headers downstream. Origin is retained because the paid metadata endpoint
+  // validates it. CF-Connecting-IP is the one trusted edge value retained so
+  // the downstream paid-upload limiter can key by the actual client.
   const headers = new Headers();
-  for (const name of ["accept", "content-type", "origin"] as const) {
+  for (const name of [
+    "accept",
+    "content-type",
+    "origin",
+    "cf-connecting-ip",
+  ] as const) {
     const value = request.headers.get(name);
     if (value !== null) headers.set(name, value);
   }
 
-  const upstream = await fetch(target, {
-    method: request.method,
-    headers,
-    body:
-      request.method === "GET" || request.method === "HEAD"
-        ? undefined
-        : request.body,
-    redirect: "manual",
-  });
+  const upstream = await env.BURN_SERVICE.fetch(
+    new Request(target, {
+      method: request.method,
+      headers,
+      body:
+        request.method === "GET" || request.method === "HEAD"
+          ? undefined
+          : request.body,
+      redirect: "manual",
+    })
+  );
   if (upstream.status >= 300 && upstream.status < 400) {
     await upstream.body?.cancel();
     return jsonError("BURN_SERVICE_REDIRECTED", "burn service redirected", 502);
   }
+  const responseHeaders = new Headers();
+  for (const name of [
+    "content-type",
+    "cache-control",
+    "retry-after",
+    "allow",
+  ] as const) {
+    const value = upstream.headers.get(name);
+    if (value !== null) responseHeaders.set(name, value);
+  }
+  if (!responseHeaders.has("content-type")) {
+    responseHeaders.set("content-type", "application/json");
+  }
+  if (!responseHeaders.has("cache-control")) {
+    responseHeaders.set("cache-control", "no-store");
+  }
   return new Response(upstream.body, {
     status: upstream.status,
-    headers: {
-      "content-type":
-        upstream.headers.get("content-type") ?? "application/json",
-      "cache-control": "no-store",
-    },
+    headers: responseHeaders,
   });
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: AppEnv): Promise<Response> {
     const url = new URL(request.url);
+    if (url.hostname === "www.cooked.diy") {
+      url.hostname = "cooked.diy";
+      return withSecurityHeaders(Response.redirect(url, 308));
+    }
     const isEndpoint =
       url.pathname === "/rpc" ||
       url.pathname === "/api" ||
       url.pathname.startsWith("/api/");
     if (isEndpoint) {
       try {
-        if (!isAllowedOrigin(request)) return forbidden();
+        if (!isAllowedOrigin(request)) return withSecurityHeaders(forbidden());
         if (url.pathname === "/rpc") {
           const limited = await rateLimited(env.RPC_LIMITER, request);
-          return limited ?? handleRpc(request, env, true);
+          return withSecurityHeaders(
+            limited ?? (await handleRpc(request, env, true))
+          );
         }
         const limited = await rateLimited(env.API_LIMITER, request);
-        return limited ?? handleApi(request, env);
+        if (limited) return withSecurityHeaders(limited);
+        if (url.pathname === "/api/community-vaults") {
+          if (request.method !== "GET" && request.method !== "HEAD") {
+            return jsonError("METHOD_NOT_ALLOWED", "GET required", 405);
+          }
+          const vault = url.searchParams.get("vault");
+          const launch = url.searchParams.get("launch");
+          const response = vault
+            ? await communityVaultSummary(env, vault)
+            : launch
+            ? await communityLaunchSummary(env, launch)
+            : await communityLeaderboard(env);
+          return withSecurityHeaders(
+            request.method === "HEAD"
+              ? new Response(null, {
+                  status: response.status,
+                  headers: response.headers,
+                })
+              : response
+          );
+        }
+        return withSecurityHeaders(await handleApi(request, env));
       } catch {
         // Cloudflare's 1101 page is generic, but key secrecy should not depend
         // on platform error rendering. Never return exception text or a URL.
-        return jsonError("UPSTREAM_UNAVAILABLE", "upstream unavailable", 502);
+        return withSecurityHeaders(
+          jsonError("UPSTREAM_UNAVAILABLE", "upstream unavailable", 502)
+        );
       }
     }
-    return env.ASSETS.fetch(request);
+    return withSecurityHeaders(await env.ASSETS.fetch(request));
   },
-};
+  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      indexFinalizedBurns(env)
+        .then(({ signatures, legs }) => {
+          console.log({ event: "community_indexed", signatures, legs });
+        })
+        .catch(() => {
+          // Never include the configured RPC URL or provider response text.
+          console.error({ event: "community_index_failed" });
+        })
+    );
+  },
+} satisfies ExportedHandler<Env>;

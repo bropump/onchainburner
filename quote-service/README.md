@@ -1,4 +1,17 @@
-# Quote-service status — KEYLESS (2026-08-26)
+# Quote-service status — KEYLESS Cloudflare Worker (2026-08-29)
+
+Production transport is now a private Cloudflare Worker entry at `worker.ts`.
+It has no `workers.dev` hostname and no route; `app/worker.ts` reaches it through
+the `BURN_SERVICE` service binding after enforcing the app's exact-Origin and
+per-IP gates. The Node entry moved to `node-main.ts` solely for local fork
+testing while the Worker rollout is verified.
+
+The Worker deliberately enables `nodejs_compat`: the transaction stack uses
+`Buffer` and `node:crypto`, and the existing Irys Node uploader imports Node
+modules. The Worker entry never selects `fork-e2e`, and the emitted bundle was
+checked not to contain the local `~/.config/solana/id.json` path.
+`worker-fetch-compat.ts` also removes Axios's unsupported `cache: "default"`
+request option only when workerd rejects it; Node remains unpatched.
 
 OWNER DECISION 2026-08-26: the burn builder is fully keyless and open. It
 holds no burn key and signs no burn. Every control it used to enforce by
@@ -56,7 +69,7 @@ surfaces it and bounds the wait with a 240 s client deadline. At production
 volume a key is mandatory, not optional. Direct-curve legs are unaffected —
 they never call Jupiter.
 
-Endpoints (`server.ts`):
+Production endpoints (`server.ts` and `fetch-handler.ts`):
 
 - `POST /burn/prepare` — semantic request + caller pubkey in; the UNSIGNED
   transaction out (caller is the sole required signer). Stateless.
@@ -115,11 +128,13 @@ The JSON is already minified and capped at 8 KiB. Gzip would save negligible
 bytes and would make client compatibility worse, so only the image is
 re-encoded.
 
-CORS (the browser app is ALWAYS on a different origin than this service, so
-cross-origin is the normal case, not a dev workaround):
+CORS in the shared transport remains for the local Node test server. In
+production the browser calls same-origin `/api`; the app Worker forwards the
+request over a private service binding:
 
-- Keyless-route default: `Access-Control-Allow-Origin: *`, preflight OPTIONS
-  answered with allow-methods/headers and a 24h `Access-Control-Max-Age`.
+- Keyless-route default in the transport: `Access-Control-Allow-Origin: *`,
+  with preflight OPTIONS and a 24h `Access-Control-Max-Age`. The app Worker
+  does not relay those CORS headers because its public endpoint is same-origin.
 - `BURNER_ALLOWED_ORIGINS` — optional comma-separated origin allowlist; when
   set, only listed origins are echoed (with `Vary: Origin`).
 - The paid upload route is the exception: it never emits `*`, requires an
@@ -132,18 +147,71 @@ Metadata spend guardrails (defaults, all enforced before SDK upload):
 - 14,000,000-byte HTTP envelope, 10,000,000 decoded source image bytes, 200,000
   compressed WebP bytes, and 8,192 metadata JSON bytes;
 - PNG, JPEG, and WebP only, with matching file signatures (SVG/GIF refused);
-- 3 attempts per IP per hour and 30 total attempts per process per hour;
-- one paid upload in flight, sharing the service-wide inflight cap and request
-  deadline;
-- an exact CORS/Origin allowlist; set `BURNER_TRUST_PROXY=true` only behind a
-  trusted proxy so `CF-Connecting-IP`/`X-Forwarded-For` can drive the IP limit;
+- 3 attempts per IP per hour, 30 attempts globally per hour, and one paid
+  upload in flight, enforced account-wide by a single named Durable Object;
+- a three-minute Durable Object lease prevents a crashed invocation from
+  permanently blocking uploads; the request deadline remains 150 seconds;
+- an exact Origin allowlist; the app Worker forwards only Cloudflare's trusted
+  `CF-Connecting-IP` value to the private Worker for the IP budget;
 - price both Irys writes and compare them with the funded balance before the
   first write; insufficient credit returns `IRYS_INSUFFICIENT_FUNDS`.
 
-Operators may override the caps with `BURNER_MAX_UPLOAD_REQUEST_BYTES`,
-`BURNER_MAX_INFLIGHT_UPLOADS`, `BURNER_UPLOADS_PER_IP_PER_HOUR`, and
-`BURNER_UPLOADS_GLOBAL_PER_HOUR`. Raising them increases the shared-key spend
-surface.
+The production Worker pins these spend limits to the documented defaults. The
+Node-only local server still accepts its historical `BURNER_MAX_*` overrides.
+
+The metadata budget is deliberately not held in module memory: Worker isolates
+can be created or evicted. The Durable Object serializes acquisitions and keeps
+the old single-process global spend and concurrency controls intact.
+
+`/demo/*` is not an endpoint of the production quote service. Those operations
+are implemented only by `scripts/demo-burn-service.ts`, the local Surfpool
+stand-in, and require a local fork and local payer.
+
+`/token` and `/token/image` ARE production endpoints (`token-info.ts`). The
+launch picker calls both on every render, so without them every burn target
+renders unnamed and iconless — and the icon cannot simply be hotlinked:
+ipfs.io, which Jupiter returns for a large share of Pump coins, answers 403 to
+any browser User-Agent, so the bytes must be re-served from the Worker.
+
+## Worker deployment
+
+Deploy in dependency order: the image pipeline (the quote Worker's
+`CLOUDFLARE_IMAGE_WORKER_URL` must already resolve), then the private quote
+Worker, then the app Worker — Cloudflare requires a service-binding target to
+exist before deploying its caller.
+
+```console
+# 1. Image pipeline. Its token is a shared secret you choose; set the SAME
+#    value here and as CLOUDFLARE_IMAGE_WORKER_TOKEN below (min 32 chars).
+npx wrangler secret put IMAGE_PIPELINE_TOKEN --config quote-service/wrangler.image-pipeline.jsonc
+npx wrangler deploy --config quote-service/wrangler.image-pipeline.jsonc
+
+# 2. Quote Worker. Every one of these is REQUIRED: buildProductionWiring reads
+#    them from process.env (nodejs_compat mirrors bindings there) and throws on
+#    a missing one, which surfaces as a 503 on every route, not just the one
+#    that needed it.
+npx wrangler secret put BURNER_RPC_URL --config quote-service/wrangler.jsonc
+npx wrangler secret put BURNER_MAX_AMOUNT_LAMPORTS --config quote-service/wrangler.jsonc
+npx wrangler secret put BURNER_MAX_SLIPPAGE_BPS --config quote-service/wrangler.jsonc
+npx wrangler secret put BURNER_MAX_PRICE_IMPACT_BPS --config quote-service/wrangler.jsonc
+npx wrangler secret put IRYS_PRIVATE_KEY --config quote-service/wrangler.jsonc
+npx wrangler secret put CLOUDFLARE_IMAGE_WORKER_URL --config quote-service/wrangler.jsonc
+npx wrangler secret put CLOUDFLARE_IMAGE_WORKER_TOKEN --config quote-service/wrangler.jsonc
+npx wrangler secret put BURNER_ALLOWED_ORIGINS --config quote-service/wrangler.jsonc
+npx wrangler deploy --config quote-service/wrangler.jsonc
+
+# 3. App Worker, which is the only public edge.
+cd app && npx wrangler deploy
+```
+
+The Irys wallet must hold a balance before any upload succeeds. Startup logs
+`metadata-upload-enabled` with the balance it found; a zero balance still boots,
+then fails at the first paid upload.
+
+None of these values belongs in `VITE_*`. `BURNER_ALLOWED_ORIGINS` must be the
+exact public app origin(s); include localhost only when remote local development
+is intentional. The 7.67 MiB uncompressed Worker bundle requires Workers Paid
+(the free-plan script limit is 3 MiB).
 
 Gates:
 
@@ -151,5 +219,6 @@ Gates:
 pnpm typecheck:quote-service
 pnpm test:quote-service
 pnpm build:quote-service
+npx wrangler deploy --dry-run --config quote-service/wrangler.jsonc
 pnpm test:service-fork   # real burns through the real pipeline on a Surfpool fork
 ```

@@ -7,9 +7,11 @@
  * MIGRATES across graduation, so the vault address survives the token's own
  * success. Any other target enumerates ALL of its markets across the venues
  * the program can price (Raydium v4 / CP / CLMM, Meteora DLMM) and picks
- * per `rankCandidates` (OWNER 2026-08-28): durable locked depth first,
- * otherwise deepest SOL-side depth across every venue. Jupiter's 1 SOL hop
- * is not the default pick.
+ * per `rankCandidates` (OWNER 2026-08-29): for fungible-LP AMMs, only the
+ * main pool with enough independently proven burned/custodied LP may win;
+ * for CLMM/DLMM position venues, the deepest qualifying pool wins and the
+ * oldest trustworthy on-chain open time breaks a depth tie. Jupiter's 1 SOL
+ * hop is not the default pick.
  *
  * Enumeration is REAL — `getProgramAccounts` with dataSize + mint memcmp
  * filters per venue, both mint orders — not a hardcoded table — and it is
@@ -76,6 +78,8 @@ type EnumVenue = Readonly<{
   durability: "cp-lp" | "positions";
   lpMint?: number;
   lpIssued?: number | "cp-lp-supply";
+  /** Detection-only venues are shown diagnostically but can never be ranked. */
+  supportedReference?: false;
 }>;
 
 /**
@@ -129,6 +133,30 @@ const ENUM_VENUES: readonly EnumVenue[] = [
     durability: "positions",
   },
 ];
+
+/**
+ * Detection only. The deployed burner does not yet parse DAMM v2 as a bound
+ * reference, even though Jupiter may execute a swap through it. Keeping this
+ * outside `ENUM_VENUES` makes it impossible for ranking or `resolveReference`
+ * to select it while still letting the UI explain the real reason a token is
+ * blocked.
+ */
+const METEORA_DAMM_V2_DIAGNOSTIC: EnumVenue = {
+  name: "Meteora DAMM v2",
+  program: "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+  dataSize: 1112,
+  mint0: 168,
+  mint1: 200,
+  vault0: 232,
+  vault1: 264,
+  durability: "positions",
+  supportedReference: false,
+};
+const METEORA_DAMM_V2_POOL_DISCRIMINATOR = Buffer.from([
+  241, 154, 109, 4, 17, 177, 109, 188,
+]);
+const METEORA_DAMM_V2_LIQUIDITY_OFFSET = 360;
+const METEORA_DAMM_V2_PERMANENT_LOCK_OFFSET = 552;
 
 /**
  * Raydium SDK v2's mainnet Burn & Earn constants. The custody vault is the
@@ -189,6 +217,9 @@ export type MarketCandidate = {
   venue: string;
   /** SOL-side vault balance in lamports (pre-authentication read). */
   depthLamports: string;
+  /** Trustworthy venue-native activation/open timestamp, when one exists. */
+  openedAtUnixSeconds?: string;
+  ageSource?: "raydium-clmm-open-time" | "meteora-dlmm-activation-time";
   /** Positive-evidence durability verdict. `unverified` is never ranked safe. */
   durability: MarketDurability;
   /** UI-facing explanation of exactly which on-chain evidence earned it. */
@@ -240,9 +271,45 @@ export function marketSelectionForTransport(
 const readPk = (data: Buffer, offset: number) =>
   new PublicKey(data.subarray(offset, offset + 32));
 const u64 = (data: Buffer, offset: number) => data.readBigUInt64LE(offset);
+const u128 = (data: Buffer, offset: number) =>
+  u64(data, offset) | (u64(data, offset + 8) << 64n);
 
 const TOKEN_ACCOUNT_LENGTH = 165;
 const TOKEN_MINT_LENGTH = 82;
+const RAYDIUM_CLMM_OPEN_TIME_OFFSET = 1080;
+const METEORA_DLMM_ACTIVATION_TYPE_OFFSET = 86;
+const METEORA_DLMM_ACTIVATION_POINT_OFFSET = 816;
+
+function readPoolOpenTime(
+  venue: EnumVenue,
+  data: Buffer
+): Pick<MarketCandidate, "openedAtUnixSeconds" | "ageSource"> {
+  let timestamp = 0n;
+  let ageSource: MarketCandidate["ageSource"];
+  if (
+    venue.name === "Raydium CLMM" &&
+    data.length >= RAYDIUM_CLMM_OPEN_TIME_OFFSET + 8
+  ) {
+    timestamp = u64(data, RAYDIUM_CLMM_OPEN_TIME_OFFSET);
+    ageSource = "raydium-clmm-open-time";
+  } else if (
+    venue.name === "Meteora DLMM" &&
+    data.length >= METEORA_DLMM_ACTIVATION_POINT_OFFSET + 8 &&
+    data[METEORA_DLMM_ACTIVATION_TYPE_OFFSET] === 1
+  ) {
+    // Only timestamp-activated permissioned pairs expose a comparable time.
+    // Slot activation and ordinary permissionless pairs do not pretend to be
+    // creation timestamps; those remain honestly unknown.
+    timestamp = u64(data, METEORA_DLMM_ACTIVATION_POINT_OFFSET);
+    ageSource = "meteora-dlmm-activation-time";
+  }
+  const now = BigInt(Math.floor(Date.now() / 1_000));
+  const solanaLaunch = 1_578_000_000n;
+  if (!ageSource || timestamp < solanaLaunch || timestamp > now + 86_400n) {
+    return {};
+  }
+  return { openedAtUnixSeconds: timestamp.toString(), ageSource };
+}
 
 function percentOf(part: bigint, whole: bigint): number {
   // Four decimal places is ample for UI/reporting, while every decision and
@@ -581,7 +648,12 @@ export async function inspectPoolLocking(
   return measurePoolLocking(reader, pool, owner, venue, info.data, depth);
 }
 
-const ENUMERATION_SCAN_CONCURRENCY = 2;
+// FluxRPC accepts the standard filtered getProgramAccounts shape used here.
+// There are exactly two mint-order scans for each of four supported venues;
+// run all eight together. The old limit of two serialized them into four
+// waves and caused the browser's 15-second deadline to expire even though
+// every request was independent and returned only pubkeys (zero-byte slice).
+const ENUMERATION_SCAN_CONCURRENCY = 8;
 const CANDIDATE_READ_CONCURRENCY = 4;
 
 async function mapWithConcurrency<T, R>(
@@ -629,7 +701,8 @@ function describeReference(
 export async function enumerateMarkets(
   reader: AccountDataReader,
   gpa: ProgramAccountsReader,
-  mint: PublicKey
+  mint: PublicKey,
+  venues: readonly EnumVenue[] = ENUM_VENUES
 ): Promise<MarketCandidate[]> {
   const wsol = WSOL_ADDRESS;
   const scans: {
@@ -637,7 +710,7 @@ export async function enumerateMarkets(
     mint0: string;
     mint1: string;
   }[] = [];
-  for (const venue of ENUM_VENUES) {
+  for (const venue of venues) {
     for (const [a, b] of [
       [mint.toBase58(), wsol],
       [wsol, mint.toBase58()],
@@ -680,6 +753,15 @@ export async function enumerateMarkets(
         const info = await reader.getAccountData(pool);
         if (!info) return candidate;
         const data = info.data;
+        if (
+          venue.supportedReference === false &&
+          !data
+            .subarray(0, METEORA_DAMM_V2_POOL_DISCRIMINATOR.length)
+            .equals(METEORA_DAMM_V2_POOL_DISCRIMINATOR)
+        ) {
+          candidate.rejected = "account is not a Meteora DAMM v2 Pool";
+          return candidate;
+        }
         const vaults = [readPk(data, venue.vault0), readPk(data, venue.vault1)];
         let depth = 0n;
         let tokenDepth = 0n;
@@ -700,9 +782,37 @@ export async function enumerateMarkets(
           }
         }
         candidate.depthLamports = depth.toString();
+        Object.assign(candidate, readPoolOpenTime(venue, data));
         candidate.meetsDepthFloor =
           depth >= MIN_REFERENCE_DEPTH_LAMPORTS && tokenDepth > 0n;
-        await applyDurability(reader, pool, venue, data, depth, candidate);
+        if (venue.supportedReference === false) {
+          const totalLiquidity = u128(
+            data,
+            METEORA_DAMM_V2_LIQUIDITY_OFFSET
+          );
+          const permanentlyLocked = u128(
+            data,
+            METEORA_DAMM_V2_PERMANENT_LOCK_OFFSET
+          );
+          candidate.rejected =
+            "Meteora DAMM v2 is not supported as a burner reference yet — a Solana program update is required";
+          candidate.durabilityReason =
+            "Meteora reports permanent position liquidity, but the deployed burner cannot authenticate or price DAMM v2 references yet";
+          if (
+            totalLiquidity > 0n &&
+            permanentlyLocked <= totalLiquidity
+          ) {
+            candidate.durability = "locked-by-custody";
+            candidate.lockedPct = percentOf(
+              permanentlyLocked,
+              totalLiquidity
+            );
+            candidate.lockedDepthLamports =
+              ((depth * permanentlyLocked) / totalLiquidity).toString();
+          }
+        } else {
+          await applyDurability(reader, pool, venue, data, depth, candidate);
+        }
       } catch (error) {
         if (error instanceof ReferenceDiscoveryError) throw error;
         candidate.durability = "unverified";
@@ -714,6 +824,29 @@ export async function enumerateMarkets(
     }
   );
   return candidates.sort(compareDepthVenueAndPool);
+}
+
+export function unsupportedDammSelection(
+  mint: PublicKey,
+  candidates: MarketCandidate[],
+  enumerationSource: string
+): MarketSelection {
+  const main = [...candidates].sort(compareDepthVenueAndPool)[0];
+  const depth = main
+    ? `${(Number(main.depthLamports) / 1e9).toFixed(1)} SOL`
+    : "unknown depth";
+  const lock =
+    main?.lockedPct === undefined
+      ? ""
+      : `, ${main.lockedPct.toFixed(2)}% permanently locked`;
+  return {
+    targetMint: mint.toBase58(),
+    branch: "market-enumeration",
+    chosen: null,
+    pickReason: `Meteora DAMM v2 pool detected (${depth}${lock}) — NOT SUPPORTED YET for Cooked buy/burn; the deployed Solana burner needs a DAMM v2 reference-parser update`,
+    candidates,
+    enumerationSource: `${enumerationSource}; detection-only DAMM v2 scan`,
+  };
 }
 
 /** Apply the same evidence report exposed by `inspectPoolLocking`. */
@@ -900,6 +1033,20 @@ export async function candidateFromRoutePlan(
   return resolveCandidate(reader, mint, new PublicKey(main.swapInfo.ammKey));
 }
 
+function isConclusiveLockedAmm(candidate: MarketCandidate): boolean {
+  return (
+    (candidate.venue === "Raydium v4" ||
+      candidate.venue === "Raydium CP") &&
+    candidate.meetsDepthFloor &&
+    !candidate.rejected &&
+    (candidate.durability === "burned" ||
+      candidate.durability === "locked-by-custody") &&
+    candidate.lockedDepthLamports !== undefined &&
+    BigInt(candidate.lockedDepthLamports) >= MIN_REFERENCE_DEPTH_LAMPORTS
+  );
+}
+
+
 /** True when the mint has a REAL Pump bonding curve (owner-checked — the
  * curve PDA can be a lamport-dusted System account, observed for $PUMP). */
 export async function hasPumpCurve(
@@ -919,17 +1066,20 @@ export async function hasPumpCurve(
 }
 
 /**
- * The ranking rule (OWNER 2026-08-28), exactly:
+ * The ranking rule (OWNER 2026-08-29), exactly:
  *
  *   Eligible = meetsDepthFloor && !rejected (50 SOL gate, 6041).
  *   Do not use array order (`eligible[0]` is a bug if unsorted).
  *
- *   1. If any eligible candidate's locked depth alone clears the gate
- *      (lockedDepth >= 50 SOL), the most-locked wins (durability).
- *   2. Otherwise the deepest SOL-side pool wins across every venue.
- *   3. Only equal depths use venue preference, then pool-pubkey byte order.
- *      No age field is used: CLMM `open_time` is disabled, while DLMM
- *      `activation_point` is not a cross-venue creation timestamp.
+ *   1. A fungible-LP AMM (Raydium v4 / CP) is eligible to win only when its
+ *      independently proven burned/custodied depth itself clears 50 SOL.
+ *      Among those, the most non-withdrawable SOL depth wins.
+ *   2. Otherwise only CLMM/DLMM position pools are considered; deepest live
+ *      SOL-side depth wins.
+ *   3. Equal concentrated depth uses the oldest trustworthy venue-native
+ *      open time, then venue preference and pool-pubkey byte order. Raydium
+ *      CLMM exposes `open_time`; Meteora is used only when the pair explicitly
+ *      says its activation point is a timestamp. Unknown age is never made up.
  *
  * Pump coins are NOT ranked here — `selectReference` binds the Pump venue
  * before enumeration. DBC graduates to DAMM v2, which is not a bindable
@@ -960,6 +1110,17 @@ function compareDepthVenueAndPool(
   const depthA = BigInt(a.depthLamports);
   const depthB = BigInt(b.depthLamports);
   if (depthA !== depthB) return depthA > depthB ? -1 : 1;
+  const ageA = a.openedAtUnixSeconds
+    ? BigInt(a.openedAtUnixSeconds)
+    : undefined;
+  const ageB = b.openedAtUnixSeconds
+    ? BigInt(b.openedAtUnixSeconds)
+    : undefined;
+  if (ageA !== undefined && ageB !== undefined && ageA !== ageB) {
+    return ageA < ageB ? -1 : 1;
+  }
+  if (ageA !== undefined && ageB === undefined) return -1;
+  if (ageA === undefined && ageB !== undefined) return 1;
   const venueA = VENUE_TIE_BREAK.get(a.venue) ?? Number.MAX_SAFE_INTEGER;
   const venueB = VENUE_TIE_BREAK.get(b.venue) ?? Number.MAX_SAFE_INTEGER;
   if (venueA !== venueB) return venueA - venueB;
@@ -998,6 +1159,8 @@ export function rankCandidates(candidates: readonly MarketCandidate[]): {
   }
   const durable = eligible.filter(
     (candidate) =>
+      (candidate.venue === "Raydium v4" ||
+        candidate.venue === "Raydium CP") &&
       candidate.lockedDepthLamports !== undefined &&
       BigInt(candidate.lockedDepthLamports) >= MIN_REFERENCE_DEPTH_LAMPORTS
   );
@@ -1016,12 +1179,29 @@ export function rankCandidates(candidates: readonly MarketCandidate[]): {
       }); it clears the 50 SOL gate on locked depth alone`,
     };
   }
-  const pick = [...eligible].sort(compareDepthVenueAndPool)[0];
+  const concentrated = eligible.filter(
+    (candidate) =>
+      candidate.venue === "Raydium CLMM" ||
+      candidate.venue === "Meteora DLMM"
+  );
+  if (!concentrated.length) {
+    return {
+      pick: null,
+      reason:
+        "no CLMM/DLMM pool clears the 50 SOL gate and no fungible-LP AMM proves at least 50 SOL of burned or locked depth; an unlocked AMM is never selected for a vault",
+    };
+  }
+  const pick = [...concentrated].sort(compareDepthVenueAndPool)[0];
+  const age = pick.openedAtUnixSeconds
+    ? `; equal depth would prefer the oldest verified open time (${new Date(
+        Number(pick.openedAtUnixSeconds) * 1_000
+      ).toISOString()})`
+    : "; this venue exposes no trustworthy comparable creation time for this pool, so no age was invented";
   return {
     pick,
-    reason: `deepest SOL-side eligible market (${describeDepth(
+    reason: `deepest eligible CLMM/DLMM position market (${describeDepth(
       pick
-    )}); no pool clears the 50 SOL gate on locked depth alone, so venue can only break an equal-depth tie`,
+    )}); no fungible-LP AMM clears the 50 SOL gate on proven burned/locked depth${age}`,
   };
 }
 
@@ -1058,7 +1238,8 @@ function withDiscoveryDeadline<T>(
         ),
       deadlineMs
     );
-    timer.unref();
+    // Node timers expose unref(); Web-standard Worker timers do not.
+    (timer as unknown as { unref?: () => void }).unref?.();
     operation.then(resolve, reject).finally(() => clearTimeout(timer));
   });
 }
@@ -1134,7 +1315,8 @@ export async function selectReference(
   reader: AccountDataReader,
   gpa: ProgramAccountsReader,
   mint: PublicKey,
-  enumerationSource: string
+  enumerationSource: string,
+  legacyPumpRoutePlan?: () => Promise<readonly unknown[] | undefined>
 ): Promise<MarketSelection> {
   // Pump branch: a REAL bonding curve (owner-checked — the curve PDA can be
   // a lamport-dusted System account, observed live for $PUMP) routes to the
@@ -1178,15 +1360,127 @@ export async function selectReference(
       };
     }
     // Graduated but no canonical PumpSwap pool: a Raydium-era graduate
-    // (e.g. NEIRO, FARTCOIN). Fall through to market enumeration.
+    // (e.g. PNUT, NEIRO, FARTCOIN). A Jupiter lookup is permitted only in
+    // this already-RPC-proven legacy state, preserving its scarce quota for
+    // the one class whose program-wide GPA discovery is consistently slow.
+    // Jupiter supplies an address only; every qualification field below is
+    // independently read from Solana through the configured RPC.
+    if (legacyPumpRoutePlan) {
+      try {
+        const hinted = await candidateFromRoutePlan(
+          reader,
+          mint,
+          await legacyPumpRoutePlan()
+        );
+        if (isConclusiveLockedAmm(hinted)) {
+          const { reference: _reference, ...transportCandidate } = hinted;
+          return {
+            targetMint: mint.toBase58(),
+            branch: "market-enumeration",
+            chosen: hinted,
+            pickReason: `legacy Pump graduate: Jupiter identified the main direct SOL pool, then RPC independently proved ${(Number(hinted.lockedDepthLamports) / 1e9).toFixed(1)} SOL permanently burned or custody-locked`,
+            // Never leak the resolver closure into the JSON-safe diagnostic
+            // list: it contains bigint fields and is stripped from `chosen`
+            // by marketSelectionForTransport as well.
+            candidates: [transportCandidate],
+            enumerationSource:
+              "legacy-Pump Jupiter address hint, independently authenticated through RPC",
+          };
+        }
+      } catch {
+        // A throttled, multi-hop, unsupported, or invalid hint has no weight.
+      }
+    }
   }
 
-  const candidates = await enumerateMarkets(reader, gpa, mint);
+  // Detection-only and deliberately fail-open for discovery availability:
+  // failure to inspect an unsupported venue must never hide a supported one.
+  // When it DOES resolve, retain the row so a later supported-venue timeout
+  // can say exactly what was found instead of mislabelling the mint.
+  let dammDiagnostics: MarketCandidate[] = [];
+  try {
+    dammDiagnostics = await enumerateMarkets(reader, gpa, mint, [
+      METEORA_DAMM_V2_DIAGNOSTIC,
+    ]);
+  } catch {
+    // Diagnostic only; continue with the authoritative supported venues.
+  }
+
+  // Locked fungible-LP AMMs are the first-ranked class. Search and fully
+  // authenticate that smaller class first; if one qualifies, CLMM/DLMM
+  // accounts cannot beat it and need not be scanned at all. This both matches
+  // the fixed policy and avoids making a user wait for irrelevant GPAs.
+  let ammCandidates: MarketCandidate[];
+  try {
+    ammCandidates = await enumerateMarkets(
+      reader,
+      gpa,
+      mint,
+      ENUM_VENUES.filter((venue) => venue.durability === "cp-lp")
+    );
+  } catch (error) {
+    if (dammDiagnostics.length) {
+      return unsupportedDammSelection(mint, dammDiagnostics, enumerationSource);
+    }
+    throw error;
+  }
+  for (let round = 0; round <= ammCandidates.length; round += 1) {
+    const { pick, reason } = rankCandidates(ammCandidates);
+    if (!pick) break;
+    try {
+      const reference = await resolveReference(
+        reader,
+        mint,
+        new PublicKey(pick.pool)
+      );
+      Object.assign(pick, describeReference(reference));
+      return {
+        targetMint: mint.toBase58(),
+        branch: "market-enumeration",
+        chosen: { ...pick, reference },
+        pickReason: reason,
+        candidates: ammCandidates,
+        enumerationSource: `${enumerationSource}; locked-AMM phase completed without scanning CLMM/DLMM`,
+      };
+    } catch (error) {
+      if (error instanceof ReferenceDiscoveryError) throw error;
+      pick.rejected = String((error as Error).message ?? error).slice(0, 200);
+    }
+  }
+
+  let concentratedCandidates: MarketCandidate[];
+  try {
+    concentratedCandidates = await enumerateMarkets(
+      reader,
+      gpa,
+      mint,
+      ENUM_VENUES.filter((venue) => venue.durability === "positions")
+    );
+  } catch (error) {
+    if (dammDiagnostics.length) {
+      return unsupportedDammSelection(
+        mint,
+        [...ammCandidates, ...dammDiagnostics],
+        enumerationSource
+      );
+    }
+    throw error;
+  }
+  const candidates = [...ammCandidates, ...concentratedCandidates].sort(
+    compareDepthVenueAndPool
+  );
   // Authenticate candidates best-first until one passes; record why any
   // ranked-above candidate was refused.
   for (let round = 0; ; round += 1) {
     const { pick, reason } = rankCandidates(candidates);
     if (!pick) {
+      if (dammDiagnostics.length) {
+        return unsupportedDammSelection(
+          mint,
+          [...candidates, ...dammDiagnostics],
+          enumerationSource
+        );
+      }
       return {
         targetMint: mint.toBase58(),
         branch: "market-enumeration",
@@ -1215,6 +1509,13 @@ export async function selectReference(
       if (error instanceof ReferenceDiscoveryError) throw error;
       pick.rejected = String((error as Error).message ?? error).slice(0, 200);
       if (round >= candidates.length) {
+        if (dammDiagnostics.length) {
+          return unsupportedDammSelection(
+            mint,
+            [...candidates, ...dammDiagnostics],
+            enumerationSource
+          );
+        }
         return {
           targetMint: mint.toBase58(),
           branch: "market-enumeration",

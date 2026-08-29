@@ -18,6 +18,7 @@ import {
   rankCandidates,
   ReferenceDiscoveryError,
   SOLANA_INCINERATOR,
+  unsupportedDammSelection,
 } from "./markets";
 
 const FLOOR = MIN_REFERENCE_DEPTH_LAMPORTS;
@@ -38,6 +39,29 @@ function candidate(
 }
 
 describe("rankCandidates", () => {
+  it("keeps a locked DAMM v2 pool diagnostic-only and unselectable", () => {
+    const damm = candidate({
+      pool: pool(90),
+      venue: "Meteora DAMM v2",
+      depthLamports: (61n * SOL).toString(),
+      durability: "locked-by-custody",
+      lockedPct: 99.8063,
+      lockedDepthLamports: (60n * SOL).toString(),
+      rejected:
+        "Meteora DAMM v2 is not supported as a burner reference yet — a Solana program update is required",
+    });
+    const selection = unsupportedDammSelection(
+      new PublicKey(Buffer.alloc(32, 91)),
+      [damm],
+      "fixture"
+    );
+    expect(selection.chosen).to.equal(null);
+    expect(selection.candidates[0]).to.equal(damm);
+    expect(selection.pickReason).to.match(/NOT SUPPORTED YET/);
+    expect(selection.pickReason).to.match(/99\.81% permanently locked/);
+    expect(selection.enumerationSource).to.match(/detection-only DAMM v2/);
+  });
+
   it("locked CP ≥ 50 SOL beats a deeper transient CLMM", () => {
     const clmm = candidate({
       pool: pool(1),
@@ -116,7 +140,7 @@ describe("rankCandidates", () => {
     });
     const { pick, reason } = rankCandidates([clmm, dlmm, v4]);
     expect(pick?.pool).to.equal(pool(3));
-    expect(reason).to.match(/deepest SOL-side/);
+    expect(reason).to.match(/deepest eligible CLMM\/DLMM/);
 
     const cp = candidate({
       pool: pool(6),
@@ -125,7 +149,7 @@ describe("rankCandidates", () => {
     });
     const again = rankCandidates([dlmm, cp, clmm]);
     expect(again.pick?.pool).to.equal(pool(3));
-    expect(again.reason).to.match(/deepest SOL-side/);
+    expect(again.reason).to.match(/deepest eligible CLMM\/DLMM/);
   });
 
   it("two DLMMs: deeper wins", () => {
@@ -141,7 +165,7 @@ describe("rankCandidates", () => {
     });
     const { pick, reason } = rankCandidates([shallow, deep]);
     expect(pick?.pool).to.equal(pool(8));
-    expect(reason).to.match(/deepest SOL-side/);
+    expect(reason).to.match(/deepest eligible CLMM\/DLMM/);
   });
 
   it("equal-depth ties are stable across RPC response order", () => {
@@ -159,7 +183,7 @@ describe("rankCandidates", () => {
     expect(rankCandidates([earlierKey, laterKey]).pick?.pool).to.equal(pool(9));
   });
 
-  it("venue only breaks an exactly equal-depth tie", () => {
+  it("does not select an unlocked fungible-LP AMM over a concentrated pool", () => {
     const clmm = candidate({
       pool: pool(1),
       venue: "Raydium CLMM",
@@ -170,7 +194,40 @@ describe("rankCandidates", () => {
       venue: "Raydium CP",
       depthLamports: (200n * SOL).toString(),
     });
-    expect(rankCandidates([clmm, cp]).pick?.pool).to.equal(pool(20));
+    expect(rankCandidates([clmm, cp]).pick?.pool).to.equal(pool(1));
+  });
+
+  it("oldest verified open time breaks an equal concentrated-depth tie", () => {
+    const newer = candidate({
+      pool: pool(30),
+      venue: "Raydium CLMM",
+      depthLamports: (200n * SOL).toString(),
+      openedAtUnixSeconds: "1700000100",
+      ageSource: "raydium-clmm-open-time",
+    });
+    const older = candidate({
+      pool: pool(31),
+      venue: "Meteora DLMM",
+      depthLamports: (200n * SOL).toString(),
+      openedAtUnixSeconds: "1700000000",
+      ageSource: "meteora-dlmm-activation-time",
+    });
+    expect(rankCandidates([newer, older]).pick?.pool).to.equal(pool(31));
+    expect(rankCandidates([older, newer]).pick?.pool).to.equal(pool(31));
+  });
+
+  it("refuses an unlocked AMM when no CLMM/DLMM exists", () => {
+    const unlocked = candidate({
+      pool: pool(32),
+      venue: "Raydium CP",
+      depthLamports: (5_000n * SOL).toString(),
+      durability: "not-locked",
+      lockedPct: 0,
+      lockedDepthLamports: "0",
+    });
+    const result = rankCandidates([unlocked]);
+    expect(result.pick).to.equal(null);
+    expect(result.reason).to.match(/unlocked AMM is never selected/);
   });
 
   it("none eligible → null + 6041 reason", () => {

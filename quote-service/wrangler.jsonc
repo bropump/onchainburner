@@ -1,0 +1,42 @@
+{
+  "$schema": "../app/node_modules/wrangler/config-schema.json",
+  "name": "onchainburner-quote-service",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-08-29",
+  // Deliberate: web3.js, spl-token, and the existing transaction code use
+  // Buffer and node:crypto. At this compatibility date nodejs_compat includes
+  // v2 and exposes Worker bindings through process.env to the unchanged
+  // production wiring in server.ts.
+  "compatibility_flags": ["nodejs_compat"],
+  // No public hostname and no route. Only the app Worker's service binding can
+  // invoke this Worker.
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "METADATA_UPLOAD_GATE",
+        "class_name": "MetadataUploadGateV3"
+      }
+    ]
+  },
+  // v1/v2 are immutable migration history. v3 uses a new class name because
+  // the old class was explicitly deleted and cannot safely be resurrected.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MetadataUploadGate"] },
+    { "tag": "v2", "deleted_classes": ["MetadataUploadGate"] },
+    { "tag": "v3", "new_sqlite_classes": ["MetadataUploadGateV3"] }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "services": [
+    {
+      "binding": "IMAGE_PIPELINE",
+      "service": "onchain-burner-image-pipeline"
+    }
+  ],
+  "limits": {
+    "cpu_ms": 30000,
+    "subrequests": 200
+  }
+}

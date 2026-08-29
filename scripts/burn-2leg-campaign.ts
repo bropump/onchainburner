@@ -47,6 +47,7 @@ import {
 import {
   JupiterV2HttpClient,
   LocalKeypairMessageSigner,
+  PumpDirectCurveClient,
   SolanaRpcGateway,
 } from "../quote-service/adapters";
 import { resolveReference } from "../quote-service/reference";
@@ -63,8 +64,15 @@ const PROGRAM = new PublicKey(
 );
 const BURNS_PER_PAIR = Number(process.env.BURNS_PER_PAIR ?? "2");
 const BURN_LAMPORTS = BigInt(process.env.BURN_LAMPORTS ?? "50000000");
+const CAMPAIGN_MODE = process.env.CAMPAIGN_MODE ?? "default";
+if (!["default", "no-alt", "with-alt", "both"].includes(CAMPAIGN_MODE)) {
+  throw new Error(`invalid CAMPAIGN_MODE ${CAMPAIGN_MODE}`);
+}
 
-const TOKENS: Record<string, { mint: string; pool: string; venue: string }> = {
+const TOKENS: Record<
+  string,
+  { mint: string; pool: string | "pump"; venue: string }
+> = {
   JTO: {
     mint: "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL",
     pool: "JVoPtWWDsRcLvQosu5fWc2CaNF6jEtJzbxdPtcEuvZo",
@@ -77,8 +85,8 @@ const TOKENS: Record<string, { mint: string; pool: string; venue: string }> = {
   },
   PUMP: {
     mint: "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",
-    pool: "45ssPkUQs1ssbeDqxD2mZrMdJYAXF7GyQyhS5xDXuWC5",
-    venue: "Raydium CLMM",
+    pool: "HbjYfcWZBjCBYTJpZkLGxqArVmZVu3mQcRudb6Wg1sVh",
+    venue: "Meteora DLMM",
   },
   BONK: {
     mint: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
@@ -105,9 +113,39 @@ const TOKENS: Record<string, { mint: string; pool: string; venue: string }> = {
     pool: "AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA",
     venue: "Raydium v4",
   },
+  JUP: {
+    mint: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+    pool: "C8Gr6AUuq9hEdSYJzoEpNcdjpojPZwqG5MtQbeouNNwg",
+    venue: "Meteora DLMM",
+  },
+  MET: {
+    mint: "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL",
+    pool: "AsSyvUnbfaZJPRrNh3kUuvZTeHKoMVWEoHz86f4Q5D9x",
+    venue: "Meteora DLMM",
+  },
+  KET: {
+    mint: "9Pfync3ejPC9eHqVzq3nYQJAhyhjqpnB9UsaSfLxpump",
+    pool: "pump",
+    venue: "canonical PumpSwap",
+  },
+  ANSEM: {
+    mint: "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump",
+    pool: "pump",
+    venue: "canonical PumpSwap",
+  },
+  STNK: {
+    mint: "43VWkd99HjqkhFTZbWBpMpRhjG469nWa7x7uEsgSH7We",
+    pool: "EyktEFod1gAgsuM1hXmEpqkitFFk9XczkqLPx2vKiceg",
+    venue: "Raydium CP",
+  },
+  PNUT: {
+    mint: "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump",
+    pool: "4AZRPNEfCJ7iw28rJu5aUyeQhYcvdcNm8cswyL51AY9i",
+    venue: "Raydium v4",
+  },
 };
 
-const PAIRS: Array<[keyof typeof TOKENS, keyof typeof TOKENS]> = [
+const CONFIGURED_PAIRS: Array<[keyof typeof TOKENS, keyof typeof TOKENS]> = [
   ["NEIRO", "PUMP"],
   ["JTO", "NEIRO"],
   ["BONK", "WIF"],
@@ -115,6 +153,33 @@ const PAIRS: Array<[keyof typeof TOKENS, keyof typeof TOKENS]> = [
   ["JTO", "PUMP"],
   ["RAY", "NEIRO"],
 ];
+const PAGE_90_10_PAIRS: Array<[keyof typeof TOKENS, keyof typeof TOKENS]> = [
+  ["NEIRO", "NEIRO"],
+  ["WIF", "NEIRO"],
+  ["FARTCOIN", "NEIRO"],
+  ["POPCAT", "NEIRO"],
+  ["RAY", "NEIRO"],
+  ["PUMP", "NEIRO"],
+  ["JUP", "NEIRO"],
+  ["MET", "NEIRO"],
+  ["KET", "NEIRO"],
+  ["ANSEM", "NEIRO"],
+  ["STNK", "NEIRO"],
+  ["PNUT", "NEIRO"],
+];
+const PAIR_FILTER = process.env.PAIR_FILTER?.trim().toUpperCase();
+const PAIR_SOURCE =
+  process.env.PAGE_90_10_MATRIX === "1" ? PAGE_90_10_PAIRS : CONFIGURED_PAIRS;
+const PAIRS = PAIR_FILTER
+  ? PAIR_SOURCE.filter(([a, b]) => `${a}/${b}` === PAIR_FILTER)
+  : PAIR_SOURCE;
+if (!PAIRS.length) {
+  throw new Error(
+    `PAIR_FILTER ${PAIR_FILTER ?? ""} did not match ${PAIR_SOURCE.map(
+      ([a, b]) => `${a}/${b}`
+    ).join(", ")}`
+  );
+}
 
 const POOL_ONLY_FORK_DEXES = [
   "Raydium",
@@ -128,6 +193,9 @@ const POOL_ONLY_FORK_DEXES = [
   "Pump.fun Amm",
   "Pump.fun",
 ];
+const FORK_DEXES = process.env.FORK_DEXES?.split("|")
+  .map((venue) => venue.trim())
+  .filter(Boolean);
 
 class ForkJupiter implements JupiterClient {
   constructor(private readonly inner: JupiterClient) {}
@@ -138,7 +206,9 @@ class ForkJupiter implements JupiterClient {
         return await this.inner.build({
           ...params,
           excludeDexes: undefined,
-          dexes: POOL_ONLY_FORK_DEXES.filter((venue) => !excluded.has(venue)),
+          dexes: (FORK_DEXES ?? POOL_ONLY_FORK_DEXES).filter(
+            (venue) => !excluded.has(venue)
+          ),
           slippageBps: params.slippageBps ?? 1_500,
         });
       } catch (error) {
@@ -239,6 +309,7 @@ async function main() {
     burnerProgram: PROGRAM,
     chain,
     jupiter: new ForkJupiter(httpJupiter),
+    directCurve: new PumpDirectCurveClient(connection),
     feePayerSigner: new LocalKeypairMessageSigner(payer),
     submitter: new RpcSubmitter(connection),
     leaseStore,
@@ -272,12 +343,12 @@ async function main() {
         httpJupiter.build({
           ...params,
           dexes: POOL_ONLY_FORK_DEXES.filter(
-            (venue) =>
-              !["Whirlpool", "Orca V2", "Raydium CLMM"].includes(venue)
+            (venue) => !["Whirlpool", "Orca V2", "Raydium CLMM"].includes(venue)
           ),
           slippageBps: 1_500,
         }),
     }),
+    directCurve: new PumpDirectCurveClient(connection),
     feePayerSigner: new LocalKeypairMessageSigner(payer),
     submitter: new RpcSubmitter(connection),
     leaseStore,
@@ -297,19 +368,28 @@ async function main() {
   const tallies: Tally[] = [];
 
   for (const [pairIndex, [a, b]] of PAIRS.entries()) {
-    const legsSpec = [
-      { ...TOKENS[a], symbol: a, bps: 9_000 },
-      { ...TOKENS[b], symbol: b, bps: 1_000 },
-    ];
+    // The product merges a selected token with the fixed NEIRO leg when they
+    // collide; emitting two NEIRO legs would be rejected as duplicate targets.
+    const legsSpec =
+      a === b
+        ? [{ ...TOKENS[a], symbol: a, bps: 10_000 }]
+        : [
+            { ...TOKENS[a], symbol: a, bps: 9_000 },
+            { ...TOKENS[b], symbol: b, bps: 1_000 },
+          ];
     const launchMint = new PublicKey(legsSpec[0].mint);
-    console.log(`\n=== ${a} 90% / ${b} 10% ===`);
+    console.log(
+      a === b
+        ? `\n=== ${a} selected: merged ${a} 100% ===`
+        : `\n=== ${a} 90% / ${b} 10% ===`
+    );
     const references = [] as Awaited<ReturnType<typeof resolveReference>>[];
     for (const leg of legsSpec) {
       references.push(
         await resolveReference(
           chain,
           new PublicKey(leg.mint),
-          new PublicKey(leg.pool)
+          leg.pool === "pump" ? undefined : new PublicKey(leg.pool)
         )
       );
     }
@@ -344,8 +424,16 @@ async function main() {
       )
     );
     // Setup: ATAs + funding for every planned burn on this vault.
-    const withAlt = pairIndex === 0; // first pair also runs the ALT arm
-    const totalBurns = BURNS_PER_PAIR * (withAlt ? 2 : 1);
+    const runNoAlt =
+      CAMPAIGN_MODE === "default"
+        ? true
+        : CAMPAIGN_MODE === "no-alt" || CAMPAIGN_MODE === "both";
+    const withAlt =
+      CAMPAIGN_MODE === "default"
+        ? pairIndex === 0
+        : CAMPAIGN_MODE === "with-alt" || CAMPAIGN_MODE === "both";
+    const totalBurns =
+      BURNS_PER_PAIR * Number(runNoAlt) + BURNS_PER_PAIR * Number(withAlt);
     await sendPlain(connection, payer, [
       createAssociatedTokenAccountIdempotentInstruction(
         payer.publicKey,
@@ -416,15 +504,22 @@ async function main() {
       for (let i = 0; i < 40; i += 1) {
         const now = await connection.getSlot("confirmed");
         const live = (await connection.getAddressLookupTable(table)).value;
-        if (now > extendedAt && live && live.state.addresses.length >= unique.length) break;
+        if (
+          now > extendedAt &&
+          live &&
+          live.state.addresses.length >= unique.length
+        )
+          break;
         await new Promise((r) => setTimeout(r, 400));
       }
       altAddress = table;
-      console.log(`  lookup table ${table.toBase58()} (${unique.length} addresses)`);
+      console.log(
+        `  lookup table ${table.toBase58()} (${unique.length} addresses)`
+      );
     }
 
     const modes: Array<{ mode: Tally["mode"]; tables?: string[] }> = [
-      { mode: "no-alt" },
+      ...(runNoAlt ? [{ mode: "no-alt" as const }] : []),
       ...(withAlt && altAddress
         ? [{ mode: "with-alt" as const, tables: [altAddress.toBase58()] }]
         : []),
@@ -444,7 +539,9 @@ async function main() {
         tally.attempted += 1;
         const requestId = `c2l-${a}-${b}-${mode}-${i}-${Date.now()}`;
         try {
-          const before = BigInt(await connection.getBalance(vault, "confirmed"));
+          const before = BigInt(
+            await connection.getBalance(vault, "confirmed")
+          );
           const burnRequest = (id: string) => ({
             requestId: id,
             launchMint: launchMint.toBase58(),
@@ -452,7 +549,7 @@ async function main() {
             legs: legsSpec.map((leg) => ({
               targetMint: leg.mint,
               bps: leg.bps,
-              reference: leg.pool,
+              ...(leg.pool === "pump" ? {} : { reference: leg.pool }),
             })),
             ...(tables ? { lookupTableAddresses: tables } : {}),
           });
@@ -477,7 +574,9 @@ async function main() {
           await leaseStore.settle(vault);
           if (landed.meta?.err) {
             tally.failures.push(
-              `${requestId}: landed but FAILED on chain: ${JSON.stringify(landed.meta.err)}`
+              `${requestId}: landed but FAILED on chain: ${JSON.stringify(
+                landed.meta.err
+              )}`
             );
             console.log(`  FAIL on-chain ${JSON.stringify(landed.meta.err)}`);
             continue;
@@ -485,7 +584,9 @@ async function main() {
           const after = BigInt(await connection.getBalance(vault, "confirmed"));
           if (before - after !== BURN_LAMPORTS) {
             tally.failures.push(
-              `${requestId}: landed but vault delta ${before - after} != ${BURN_LAMPORTS}`
+              `${requestId}: landed but vault delta ${
+                before - after
+              } != ${BURN_LAMPORTS}`
             );
             continue;
           }
@@ -519,7 +620,9 @@ async function main() {
     const bytes = t.receipts.map((r) => r.bytes);
     console.log(
       `${t.pair} [${t.mode}]: ${t.landed}/${t.attempted} landed` +
-        (bytes.length ? `; bytes ${Math.min(...bytes)}-${Math.max(...bytes)}` : "")
+        (bytes.length
+          ? `; bytes ${Math.min(...bytes)}-${Math.max(...bytes)}`
+          : "")
     );
     for (const f of t.failures) console.log(`  failure: ${f}`);
   }

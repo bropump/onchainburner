@@ -28,27 +28,29 @@ pnpm build          # tsc --noEmit + vite build -> dist/
 | Variable                | Demo default            | Mainnet                                                                         |
 | ----------------------- | ----------------------- | ------------------------------------------------------------------------------- |
 | `VITE_NETWORK`          | `demo`                  | `mainnet`                                                                       |
-| `VITE_RPC_URL`          | `http://127.0.0.1:8899` | your RPC                                                                        |
-| `VITE_BURN_SERVICE_URL` | `http://127.0.0.1:8787` | absolute URL of the deployed Node quote service (or a same-origin `/api` proxy) |
+| `VITE_RPC_URL`          | `http://127.0.0.1:8899` | omit; production defaults to same-origin `/rpc`                                 |
+| `VITE_BURN_SERVICE_URL` | `http://127.0.0.1:8787` | omit; production defaults to same-origin `/api` |
 
 `VITE_NETWORK=mainnet` removes every demo-only control (demo wallet,
 airdrops, trade/distribute) and shows the MAINNET badge. Verified: the same
 bundle logic, built with only these variables changed, hides all demo
 surfaces.
 
-Cloudflare Pages should set `VITE_BURN_SERVICE_URL` separately for preview and
-production environments. Only the public service URL belongs in Vite. The Irys
-wallet is the Node service's `IRYS_PRIVATE_KEY`; it must never be configured as
-a `VITE_*` value or in Pages build variables.
+Production `/api` is handled by `app/worker.ts`, which calls the private quote
+Worker through the `BURN_SERVICE` service binding. There is no public quote
+service URL to put in Vite. The RPC endpoint, Irys wallet, image Worker URL,
+and image Worker token are Worker secrets and must never be configured as
+`VITE_*` values or frontend build variables. Mainnet builds ignore
+`VITE_RPC_URL` and `VITE_BURN_SERVICE_URL` in code; both are local-dev-only.
 
 ## Deploy to Cloudflare
 
-`wrangler.jsonc` serves `dist/` as static assets with SPA fallback.
+`wrangler.jsonc` serves `dist/` as static assets with SPA fallback and binds
+the private `onchainburner-quote-service` Worker. Deploy that Worker first.
 
 ```sh
 pnpm build && npx wrangler deploy          # demo-configured build
-VITE_NETWORK=mainnet VITE_RPC_URL=... VITE_BURN_SERVICE_URL=... pnpm build \
-  && npx wrangler deploy                   # mainnet-configured build
+VITE_NETWORK=mainnet pnpm build && npx wrangler deploy
 ```
 
 `npx wrangler deploy --dry-run` validates without deploying. Deploying needs

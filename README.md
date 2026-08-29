@@ -2,15 +2,23 @@
 
 **Cooked is a permissionless buyback-and-burn system for Solana communities.**
 
-A token creator can direct Pump trading fees into an immutable Cooked vault.
+A token creator can direct Pump trading fees into a configuration-bound Cooked vault.
 Anyone can then use the vault's SOL to buy the configured token or tokens and
 burn the entire output onchain. No operator takes custody, no backend key
-authorizes a burn, and a funded vault cannot be redirected or withdrawn.
+authorizes a burn, and the currently deployed program has no redirect or
+withdrawal instruction.
 
 - App: [cooked.diy](https://cooked.diy)
 - Solana program: [`burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5`](https://solscan.io/account/burnLkcSaW4gHz3xXT1vnKZg3oJuH6Wc2yHcmHptyh5)
 - Framework: Pinocchio
 - Artifact: SBPFv3
+
+> **Current mainnet trust boundary:** the deployed program remains upgradeable
+> by authority `4YBssBchMLgRwD7rwP6jG1ubCX1V1zWwyF3tZGyPSpzJ`. The PDA
+> configuration and no-withdrawal guarantees below describe the verified
+> bytecode currently deployed; until that authority is revoked, it can replace
+> the program. Revocation is intentionally a separate irreversible release
+> operation.
 
 ## What Cooked does
 
@@ -33,7 +41,7 @@ burns the chosen community token and 10% buys and burns NEIRO. The onchain
 program itself supports one to four distinct targets with fixed weights that
 sum to 100%.
 
-## Why the vault cannot be changed
+## Why the current vault configuration cannot be changed
 
 A Cooked vault has no configuration account. Its configuration **is its PDA
 address**:
@@ -42,10 +50,11 @@ address**:
 PDA("burner", launch mint, target mints, weights, reference pools)
 ```
 
-Changing any target, weight, or reference derives a different address. There
-is no update instruction, withdrawal instruction, admin sweep, treasury path,
-or creator override. SOL sent to a vault can only be spent by executing the
-buyback-and-burn configuration encoded in that vault's address.
+Changing any target, weight, or reference derives a different address. The
+currently deployed bytecode has no update instruction, withdrawal instruction,
+admin sweep, treasury path, or creator override. Under those verified bytes,
+SOL sent to a vault can only be spent by executing the buyback-and-burn
+configuration encoded in that vault's address.
 
 This is intentionally irreversible. The app runs the program's read-only
 `validate_config` instruction before funding a vault, and a new configuration

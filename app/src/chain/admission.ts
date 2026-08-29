@@ -62,14 +62,16 @@ export function checkLegShape(
   const weightsOk = sum === BPS_TOTAL && allPositive;
   results.push({
     id: "weights",
-    label: "Weights sum to 10,000 bps",
+    label: "Weights total 100%",
     status: weightsOk ? "pass" : "fail",
     code: weightsOk ? undefined : 6033,
     detail: weightsOk
-      ? legs.map((l) => `${l.bps}`).join(" + ") + " = 10,000"
+      ? legs.map((l) => `${l.bps / 100}%`).join(" + ") + " = 100%"
       : !allPositive
       ? "every weight must be a positive integer"
-      : `weights sum to ${sum.toLocaleString()}, not 10,000`,
+      : `weights total ${(sum / 100).toLocaleString(undefined, {
+          maximumFractionDigits: 2,
+        })}%, not 100%`,
   });
 
   const distinct = new Set(legs.map((l) => l.mint)).size === legs.length;

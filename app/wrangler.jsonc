@@ -1,6 +1,10 @@
 {
   "name": "onchainburner",
-  "compatibility_date": "2026-08-01",
+  "compatibility_date": "2026-08-29",
+  // Preserve the existing production address as a fallback while cooked.diy
+  // becomes the primary origin.
+  "workers_dev": true,
+  "preview_urls": true,
   // The Worker fronts the static assets so it can serve POST /rpc, which
   // proxies Solana JSON-RPC using a server-side secret. Everything else falls
   // through to the SPA via the ASSETS binding.
@@ -13,6 +17,41 @@
   "observability": {
     "enabled": true
   },
+  // The leaderboard is an on-chain projection: raw finalized burn legs plus
+  // deterministic aggregates. No wallet or visitor data is stored.
+  "d1_databases": [
+    {
+      "binding": "COMMUNITY_DB",
+      "database_name": "onchainburner-community",
+      "database_id": "8f5a69e1-a509-462f-9f6a-30a2352584e0",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Index finalized burner transactions incrementally. Cron runs in UTC.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  // The apex is already orange-cloud proxied. A zone route intercepts it
+  // before Cloudflare attempts the obsolete parked origin, so no destructive
+  // DNS replacement is required.
+  "routes": [
+    {
+      "pattern": "cooked.diy/*",
+      "zone_name": "cooked.diy"
+    },
+    {
+      "pattern": "www.cooked.diy/*",
+      "zone_name": "cooked.diy"
+    }
+  ],
+  // The quote Worker has no public route. /api is the only public ingress and
+  // reaches it over Cloudflare's zero-overhead service-binding path.
+  "services": [
+    {
+      "binding": "BURN_SERVICE",
+      "service": "onchainburner-quote-service"
+    }
+  ],
   // Per-IP rate limits. An origin check stops other WEBSITES using these
   // endpoints; it cannot stop a script, because Origin is client-supplied.
   // Volume abuse is bounded here instead.

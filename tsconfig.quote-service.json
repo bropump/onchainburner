@@ -11,5 +11,5 @@
     "types": ["node"]
   },
   "include": ["quote-service/*.ts"],
-  "exclude": ["quote-service/*.test.ts"]
+  "exclude": ["quote-service/*.test.ts", "quote-service/__*.ts"]
 }

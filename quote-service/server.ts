@@ -40,11 +40,7 @@
  * bytes are never logged; outbound error messages are sanitized (long
  * byte-blob runs redacted, length capped) as defense in depth.
  */
-import http from "node:http";
-import { readFileSync } from "node:fs";
-import { isIP } from "node:net";
-import os from "node:os";
-import path from "node:path";
+import type http from "node:http";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
   assertSubmittableSignedTransaction,
@@ -73,7 +69,9 @@ import {
   ReferenceDiscoveryError,
   resolveCandidate,
   selectReference,
+  SUPPORTED_REFERENCE_DEXES,
 } from "./markets";
+import { WSOL_ADDRESS } from "./reference";
 
 // ---------------------------------------------------------------------------
 // Structured logging and outbound sanitization
@@ -81,7 +79,7 @@ import {
 
 export type LogSink = (line: Readonly<Record<string, unknown>>) => void;
 
-function defaultLogSink(line: Readonly<Record<string, unknown>>): void {
+export function defaultLogSink(line: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
@@ -130,6 +128,18 @@ export type MetadataUploadResult = Readonly<{
   imageUri: string;
   /** Optional delivery mirror. Never embedded in the permanent metadata. */
   deliveryImageUri: string;
+  originalImageBytes: number;
+  imageBytes: number;
+}>;
+
+export type MetadataImagePrepareInput = Readonly<{
+  image: Buffer;
+  imageContentType: (typeof ACCEPTED_METADATA_IMAGE_TYPES)[number];
+}>;
+
+export type MetadataImagePrepareResult = Readonly<{
+  imageBase64: string;
+  imageContentType: "image/webp";
   originalImageBytes: number;
   imageBytes: number;
 }>;
@@ -183,7 +193,9 @@ const METADATA_LINK_KEYS = ["website", "twitter", "telegram"] as const;
 type MetadataLinkKey = (typeof METADATA_LINK_KEYS)[number];
 
 /** Optional socials, normalised to absolute http(s) URLs or dropped. */
-function parseMetadataLinks(raw: unknown): Partial<Record<MetadataLinkKey, string>> {
+function parseMetadataLinks(
+  raw: unknown
+): Partial<Record<MetadataLinkKey, string>> {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new MetadataUploadError(
@@ -245,7 +257,9 @@ function parseMetadataLinks(raw: unknown): Partial<Record<MetadataLinkKey, strin
   return out;
 }
 
-function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
+export function parseMetadataUploadRequest(
+  parsed: JsonBody
+): MetadataUploadInput {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new MetadataUploadError(
       "INVALID_UPLOAD_REQUEST",
@@ -255,8 +269,7 @@ function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
   }
   const object = parsed as Record<string, unknown>;
   const unknown = Object.keys(object).filter(
-    (key) =>
-      !["name", "symbol", "description", "image", "links"].includes(key)
+    (key) => !["name", "symbol", "description", "image", "links"].includes(key)
   );
   if (unknown.length) {
     throw new MetadataUploadError(
@@ -380,6 +393,40 @@ function parseMetadataUploadRequest(parsed: JsonBody): MetadataUploadInput {
   };
 }
 
+/** Parse the early, non-permanent Cloudflare image-normalization request. */
+export function parseMetadataImagePrepareRequest(
+  parsed: JsonBody
+): MetadataImagePrepareInput {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new MetadataUploadError(
+      "INVALID_UPLOAD_REQUEST",
+      "image preparation request must be an object",
+      400
+    );
+  }
+  const object = parsed as Record<string, unknown>;
+  const unknown = Object.keys(object).filter((key) => key !== "image");
+  if (unknown.length) {
+    throw new MetadataUploadError(
+      "INVALID_UPLOAD_REQUEST",
+      `image preparation contains unsupported fields: ${unknown.join(",")}`,
+      400
+    );
+  }
+  // Reuse the permanent boundary's strict MIME, base64, signature, and size
+  // validation with harmless placeholder metadata, then retain only image.
+  const validated = parseMetadataUploadRequest({
+    name: "draft",
+    symbol: "DRAFT",
+    description: "",
+    image: object.image,
+  });
+  return {
+    image: validated.image,
+    imageContentType: validated.imageContentType,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
@@ -499,7 +546,7 @@ function respondJson(
   response.end(payload);
 }
 
-function policyErrorStatus(code: string): number {
+export function policyErrorStatus(code: string): number {
   if (
     code === "VAULT_BUSY" ||
     code === "DUPLICATE_REQUEST" ||
@@ -535,6 +582,10 @@ export function createBurnServer(
   service: BurnExecutor,
   options: BurnServerOptions = {}
 ): BurnServerHandle {
+  // Kept inside the Node adapter so the Worker bundle has no node:http/net
+  // imports at module evaluation time.
+  const http = require("node:http") as typeof import("node:http");
+  const { isIP } = require("node:net") as typeof import("node:net");
   const log = options.log ?? defaultLogSink;
   const maxBodyBytes = options.maxBodyBytes ?? 16_384;
   const requestDeadlineMs = options.requestDeadlineMs ?? 150_000;
@@ -1450,7 +1501,8 @@ export function createCloudflareImageCompressor(
     async compress(image, contentType) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 30_000);
-      timer.unref();
+      // Node timers expose unref(); Web-standard Worker timers do not.
+      (timer as unknown as { unref?: () => void }).unref?.();
       try {
         const requestBody = new ArrayBuffer(image.length);
         new Uint8Array(requestBody).set(image);
@@ -1462,9 +1514,24 @@ export function createCloudflareImageCompressor(
             "content-type": contentType,
           },
           body: requestBody,
-          redirect: "error",
+          // NOT `redirect: "error"`: workerd rejects that value outright —
+          // "won't be implemented since it does not make sense at the edge" —
+          // and it throws when the Request is built, so the compressor never
+          // even reaches the image Worker. Observed live as a blanket
+          // IMAGE_COMPRESSION_FAILED with zero requests arriving at the
+          // pipeline. "manual" keeps the same property (a redirect is never
+          // followed) and is checked explicitly below.
+          redirect: "manual",
           signal: controller.signal,
         });
+        if (response.status >= 300 && response.status < 400) {
+          await response.body?.cancel();
+          throw new MetadataUploadError(
+            "IMAGE_COMPRESSION_FAILED",
+            "Cloudflare image compression is unavailable",
+            502
+          );
+        }
         if (!response.ok) {
           if ([400, 413, 415, 422].includes(response.status)) {
             throw new MetadataUploadError(
@@ -1518,7 +1585,9 @@ export function createCloudflareImageCompressor(
     },
     deliveryUri(permanentImageUri) {
       const permanent = new URL(permanentImageUri);
-      const match = permanent.pathname.match(/^\/([A-Za-z0-9_-]{43})$/);
+      const match = permanent.pathname.match(
+        /^\/(?:([A-Za-z0-9_-]{43})|([1-9A-HJ-NP-Za-km-z]{44}))$/
+      );
       if (
         permanent.origin !== "https://gateway.irys.xyz" ||
         permanent.search ||
@@ -1531,13 +1600,13 @@ export function createCloudflareImageCompressor(
           502
         );
       }
-      return `${origin}/irys/${match[1]}`;
+      return `${origin}/irys/${match[1] ?? match[2]}`;
     },
   };
 }
 
 type IrysInteger = Readonly<{ toString: () => string }>;
-type IrysReceipt = Readonly<{ id?: unknown }>;
+type IrysReceipt = unknown;
 type IrysUploaderClient = Readonly<{
   address?: string;
   ready?: () => Promise<unknown>;
@@ -1586,18 +1655,75 @@ function isIrysInsufficientFunds(error: unknown): boolean {
   );
 }
 
-function irysUri(receipt: IrysReceipt): string {
+function normalizeIrysId(value: unknown): string | null {
   if (
-    typeof receipt.id !== "string" ||
-    !/^[A-Za-z0-9_-]{43}$/.test(receipt.id)
+    typeof value === "string" &&
+    /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(value)
   ) {
-    throw new MetadataUploadError(
-      "IRYS_UPLOAD_FAILED",
-      "Irys returned an invalid upload receipt",
-      502
-    );
+    // Current Irys mainnet receipts use a base58-encoded 32-byte id. Parsing
+    // through Solana's PublicKey implementation proves both the alphabet and
+    // decoded width; re-encoding rejects non-canonical spellings.
+    try {
+      if (new PublicKey(value).toBase58() === value) return value;
+    } catch {
+      // Fall through to the historical base64url receipt format.
+    }
   }
-  return `https://gateway.irys.xyz/${receipt.id}`;
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}=?$/.test(value)) {
+    return null;
+  }
+  // Irys historically returned the canonical unpadded 43-character base64url
+  // transaction id. Its current uploader may return the equivalent 44-byte
+  // spelling with one trailing `=`. Decode before normalising so no other
+  // 44-character string can be mistaken for an id.
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(value, "base64url");
+  } catch {
+    return null;
+  }
+  return decoded.length === 32 ? value.replace(/=$/, "") : null;
+}
+
+function irysUri(receipt: IrysReceipt): string {
+  // The Irys Node client normally returns the decoded receipt object. Under
+  // workerd its Axios fetch adapter can leave the JSON body serialized, and
+  // some adapter versions retain one `data` response wrapper. Accept those
+  // transport representations only; the final value must still be the exact
+  // public 32-byte content id before it can become a URI.
+  let value: unknown = receipt;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      const id = normalizeIrysId(trimmed);
+      if (id) {
+        return `https://gateway.irys.xyz/${id}`;
+      }
+      try {
+        value = JSON.parse(trimmed) as unknown;
+        continue;
+      } catch {
+        break;
+      }
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const object = value as Readonly<Record<string, unknown>>;
+      const id = normalizeIrysId(object.id);
+      if (id) {
+        return `https://gateway.irys.xyz/${id}`;
+      }
+      if ("data" in object) {
+        value = object.data;
+        continue;
+      }
+    }
+    break;
+  }
+  throw new MetadataUploadError(
+    "IRYS_UPLOAD_FAILED",
+    "Irys returned an invalid upload receipt",
+    502
+  );
 }
 
 /**
@@ -1702,6 +1828,23 @@ export function createIrysMetadataUploadExecutor(
   };
 }
 
+export function createMetadataImagePrepareExecutor(
+  compressor: MetadataImageCompressor
+): (input: MetadataImagePrepareInput) => Promise<MetadataImagePrepareResult> {
+  return async (input) => {
+    const compressed = await compressor.compress(
+      input.image,
+      input.imageContentType
+    );
+    return {
+      imageBase64: compressed.image.toString("base64"),
+      imageContentType: compressed.contentType,
+      originalImageBytes: input.image.length,
+      imageBytes: compressed.image.length,
+    };
+  };
+}
+
 function irysWalletFromEnvironment(raw: string): string | Uint8Array {
   if (!raw.trim().startsWith("[")) return raw.trim();
   try {
@@ -1727,9 +1870,10 @@ function irysWalletFromEnvironment(raw: string): string | Uint8Array {
   }
 }
 
-async function metadataUploadFromEnvironment(
+export async function metadataUploadFromEnvironment(
   log: LogSink,
-  allowedOrigins: readonly string[]
+  allowedOrigins: readonly string[],
+  imageFetch: typeof fetch = fetch
 ): Promise<
   ((input: MetadataUploadInput) => Promise<MetadataUploadResult>) | undefined
 > {
@@ -1759,18 +1903,21 @@ async function metadataUploadFromEnvironment(
   }
   const compressor = createCloudflareImageCompressor(
     cloudflareWorkerUrl!,
-    cloudflareWorkerToken!
+    cloudflareWorkerToken!,
+    imageFetch
   );
   const wallet = irysWalletFromEnvironment(secret!);
   let irys: IrysUploaderClient;
   try {
-    // Dynamic imports keep test and keyless-only revisions from loading the
-    // signing SDK. Both packages are Node-only production dependencies.
-    // @ts-ignore -- declarations vary between Irys SDK patch releases.
-    const { Uploader } = await import("@irys/upload");
-    // @ts-ignore -- declarations vary between Irys SDK patch releases.
-    const { Solana } = await import("@irys/upload-solana");
-    irys = (await Uploader(Solana).withWallet(wallet)) as IrysUploaderClient;
+    // Keep tests and revisions without metadata upload from initializing the
+    // SDK. The local module uses STATIC package imports so Wrangler must bundle
+    // them; an unresolved bare import can no longer survive a false-positive
+    // dry-run only to fail on the first paid upload.
+    const { createIrysUploader } = await import("./irys-client");
+    irys = (await createIrysUploader(
+      wallet,
+      process.env.BURNER_RPC_URL
+    )) as unknown as IrysUploaderClient;
     await irys.ready?.();
     const balance = await irys.getBalance();
     log({
@@ -1788,6 +1935,38 @@ async function metadataUploadFromEnvironment(
     throw new Error("Irys metadata upload failed to initialize");
   }
   return createIrysMetadataUploadExecutor(irys, compressor);
+}
+
+export async function metadataPipelineFromEnvironment(
+  log: LogSink,
+  allowedOrigins: readonly string[],
+  imageFetch: typeof fetch = fetch
+): Promise<
+  | Readonly<{
+      upload: (input: MetadataUploadInput) => Promise<MetadataUploadResult>;
+      prepareImage: (
+        input: MetadataImagePrepareInput
+      ) => Promise<MetadataImagePrepareResult>;
+    }>
+  | undefined
+> {
+  const upload = await metadataUploadFromEnvironment(
+    log,
+    allowedOrigins,
+    imageFetch
+  );
+  if (!upload) return undefined;
+  const workerUrl = process.env.CLOUDFLARE_IMAGE_WORKER_URL!;
+  const workerToken = process.env.CLOUDFLARE_IMAGE_WORKER_TOKEN!;
+  const compressor = createCloudflareImageCompressor(
+    workerUrl,
+    workerToken,
+    imageFetch
+  );
+  return {
+    upload,
+    prepareImage: createMetadataImagePrepareExecutor(compressor),
+  };
 }
 
 function policyFromEnv(
@@ -1840,7 +2019,7 @@ function policyFromEnv(
   };
 }
 
-type Wiring = Readonly<{
+export type Wiring = Readonly<{
   service: BurnExecutor;
   readiness: () => Promise<void>;
   mode: "production" | "fork-e2e";
@@ -1866,12 +2045,53 @@ type Wiring = Readonly<{
  * resolver, so a wrong or hostile enumeration answer can at worst surface a
  * genuine allow-listed pool, never bind a fake one.
  */
+type ReferenceRouteProbe = (
+  mint: PublicKey
+) => Promise<readonly unknown[] | undefined>;
+
+function makeReferenceRouteProbe(
+  apiKey: string | undefined
+): ReferenceRouteProbe | undefined {
+  if (!apiKey) return undefined;
+  const endpoint = new URL(
+    process.env.JUPITER_REFERENCE_QUOTE_URL ??
+      "https://api.jup.ag/swap/v1/quote"
+  );
+  if (endpoint.protocol !== "https:") {
+    throw new Error("JUPITER_REFERENCE_QUOTE_URL must use HTTPS");
+  }
+  let nextAllowedAt = 0;
+  return async (mint) => {
+    const now = Date.now();
+    // The configured Jupiter tier is 0.5 RPS. Do not queue interactive
+    // lookups behind one another; skip the optional hint and use RPC when an
+    // isolate has spent its one request in the preceding two seconds.
+    if (now < nextAllowedAt) return undefined;
+    nextAllowedAt = now + 2_100;
+    const url = new URL(endpoint);
+    url.searchParams.set("inputMint", WSOL_ADDRESS);
+    url.searchParams.set("outputMint", mint.toBase58());
+    url.searchParams.set("amount", "100000000");
+    url.searchParams.set("slippageBps", "100");
+    url.searchParams.set("restrictIntermediateTokens", "true");
+    url.searchParams.set("dexes", SUPPORTED_REFERENCE_DEXES.join(","));
+    const response = await fetch(url, {
+      headers: { accept: "application/json", "x-api-key": apiKey },
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!response.ok) return undefined;
+    const payload = (await response.json()) as { routePlan?: unknown };
+    return Array.isArray(payload.routePlan) ? payload.routePlan : undefined;
+  };
+}
+
 function makeInfoHandlers(
   connection: Connection,
   rpcUrl: string,
   mode: string,
   burnerProgram: PublicKey,
-  payer?: PublicKey
+  payer?: PublicKey,
+  routeProbe?: ReferenceRouteProbe
 ): Pick<Wiring, "health" | "markets" | "resolve"> {
   async function retryReferenceRpc<T>(
     label: string,
@@ -1927,7 +2147,8 @@ function makeInfoHandlers(
       accountReader,
       gpaReader,
       mint,
-      `getProgramAccounts via ${rpcUrl}`
+      `getProgramAccounts via ${rpcUrl}`,
+      routeProbe ? () => routeProbe(mint) : undefined
     )
   );
   return {
@@ -2105,7 +2326,7 @@ class RpcSubmitter implements PrivateSubmitter {
   }
 }
 
-function buildProductionWiring(log: LogSink): Wiring {
+export function buildProductionWiring(log: LogSink): Wiring {
   const rpcUrl = required("BURNER_RPC_URL");
   if (!rpcUrl.startsWith("https://")) {
     throw new Error("BURNER_RPC_URL must use HTTPS");
@@ -2115,9 +2336,11 @@ function buildProductionWiring(log: LogSink): Wiring {
   );
   const connection = new Connection(rpcUrl, "confirmed");
   const chain = new SolanaRpcGateway(connection);
+  const jupiterApiKey =
+    process.env.JUPITER_API_KEY ?? process.env.JUPITER_PRIVATE_KEY;
   const jupiter = new JupiterV2HttpClient(
     process.env.JUPITER_V2_URL ?? "https://api.jup.ag/swap/v2/",
-    process.env.JUPITER_API_KEY
+    jupiterApiKey
   );
   // A private relay (e.g. a Jito bundle endpoint) is optional operational
   // hygiene, not a control: with no service signature there is nothing to
@@ -2149,7 +2372,14 @@ function buildProductionWiring(log: LogSink): Wiring {
     oneShotEnabled: false,
     service,
     ...makeCallerPaidHandlers(service, burnerProgram, submitter),
-    ...makeInfoHandlers(connection, rpcUrl, "production", burnerProgram),
+    ...makeInfoHandlers(
+      connection,
+      rpcUrl,
+      "production",
+      burnerProgram,
+      undefined,
+      makeReferenceRouteProbe(jupiterApiKey)
+    ),
     readiness: async () => {
       await Promise.all([
         chain.getBlockHeight(),
@@ -2205,6 +2435,7 @@ class ForkDexProfileJupiterClient implements JupiterClient {
 }
 
 function readKeypairFile(filename: string): Keypair {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
   return Keypair.fromSecretKey(
     Uint8Array.from(JSON.parse(readFileSync(filename, "utf8")) as number[])
   );
@@ -2219,7 +2450,12 @@ function buildForkWiring(log: LogSink): Wiring {
   }
   const payer = readKeypairFile(
     process.env.SOLANA_KEYPAIR ??
-      path.join(os.homedir(), ".config", "solana", "id.json")
+      require("node:path").join(
+        require("node:os").homedir(),
+        ".config",
+        "solana",
+        "id.json"
+      )
   );
   const connection = new Connection(rpcUrl, "confirmed");
   const chain = new SolanaRpcGateway(connection);
@@ -2278,7 +2514,7 @@ function buildForkWiring(log: LogSink): Wiring {
 // Entry point
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const log = defaultLogSink;
   const mode = process.env.BURNER_ENV;
   const allowedOrigins = (process.env.BURNER_ALLOWED_ORIGINS ?? "")
@@ -2385,18 +2621,4 @@ async function main(): Promise<void> {
     void handle.shutdown("signal").then(() => process.exit(0));
   process.once("SIGTERM", exitAfterShutdown);
   process.once("SIGINT", exitAfterShutdown);
-}
-
-if (require.main === module) {
-  main().catch((error) => {
-    defaultLogSink({
-      ts: new Date().toISOString(),
-      level: "fatal",
-      event: "startup-failed",
-      detail: sanitizeForTransport(
-        error instanceof Error ? error.message : String(error)
-      ),
-    });
-    process.exit(1);
-  });
 }

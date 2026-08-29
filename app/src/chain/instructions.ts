@@ -1,5 +1,6 @@
 import { Buffer } from "buffer";
 import {
+  AddressLookupTableAccount,
   ComputeBudgetProgram,
   Connection,
   Keypair,
@@ -13,6 +14,7 @@ import {
   getAssociatedTokenAddressSync,
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
 import {
   ERROR_NAMES,
@@ -43,14 +45,17 @@ export type ResolvedLeg = Leg & {
 export async function resolveLegs(
   connection: Connection,
   pda: PublicKey,
-  legs: Leg[]
+  legs: Leg[],
+  pendingToken2022Mints: ReadonlySet<string> = new Set()
 ): Promise<ResolvedLeg[]> {
   const infos = await connection.getMultipleAccountsInfo(
     legs.map((l) => l.mint),
     "confirmed"
   );
   return legs.map((leg, i) => {
-    const tokenProgram = infos[i]?.owner ?? TOKEN_PROGRAM_ID;
+    const tokenProgram = pendingToken2022Mints.has(leg.mint.toBase58())
+      ? TOKEN_2022_PROGRAM_ID
+      : infos[i]?.owner ?? TOKEN_PROGRAM_ID;
     return {
       ...leg,
       tokenProgram,
@@ -60,7 +65,12 @@ export async function resolveLegs(
 }
 
 export function vaultWsolAta(pda: PublicKey): PublicKey {
-  return getAssociatedTokenAddressSync(NATIVE_MINT, pda, true, TOKEN_PROGRAM_ID);
+  return getAssociatedTokenAddressSync(
+    NATIVE_MINT,
+    pda,
+    true,
+    TOKEN_PROGRAM_ID
+  );
 }
 
 /**
@@ -103,10 +113,26 @@ export function buildValidateConfigModeA(
           { pubkey: leg.mint, isSigner: false, isWritable: false },
           { pubkey: leg.ata, isSigner: false, isWritable: false },
           { pubkey: leg.tokenProgram, isSigner: false, isWritable: false },
-          { pubkey: leg.referenceBlock.pool, isSigner: false, isWritable: false },
-          { pubkey: leg.referenceBlock.vaultA, isSigner: false, isWritable: false },
-          { pubkey: leg.referenceBlock.vaultB, isSigner: false, isWritable: false },
-          { pubkey: leg.referenceBlock.feeSource, isSigner: false, isWritable: false },
+          {
+            pubkey: leg.referenceBlock.pool,
+            isSigner: false,
+            isWritable: false,
+          },
+          {
+            pubkey: leg.referenceBlock.vaultA,
+            isSigner: false,
+            isWritable: false,
+          },
+          {
+            pubkey: leg.referenceBlock.vaultB,
+            isSigner: false,
+            isWritable: false,
+          },
+          {
+            pubkey: leg.referenceBlock.feeSource,
+            isSigner: false,
+            isWritable: false,
+          },
         ];
       }),
     ],
@@ -143,21 +169,58 @@ export function buildAtaInstructions(
 export type PlannedTransaction = {
   label: string;
   instructions: TransactionInstruction[];
+  lookupTables: AddressLookupTableAccount[];
   /** Serialized v0 size with a placeholder blockhash, for the wire budget. */
   bytes: number;
 };
 
-function measure(payer: PublicKey, instructions: TransactionInstruction[]): number {
+export function measureTransaction(
+  payer: PublicKey,
+  instructions: TransactionInstruction[],
+  lookupTables: AddressLookupTableAccount[] = []
+): number {
   const message = new TransactionMessage({
     payerKey: payer,
     recentBlockhash: PublicKey.default.toBase58(),
     instructions,
-  }).compileToV0Message();
-  try {
-    return new VersionedTransaction(message).serialize().length;
-  } catch {
-    return MAX_TRANSACTION_BYTES + 1;
+  }).compileToV0Message(lookupTables);
+  const shortVecBytes = (value: number) => {
+    let bytes = 1;
+    while (value >= 128) {
+      value = Math.floor(value / 128);
+      bytes++;
+    }
+    return bytes;
+  };
+  // web3.js allocates only PACKET_DATA_SIZE while serializing, so an
+  // oversized message throws before revealing its real size. Calculate the
+  // v0 wire layout directly; this is also exact for messages over 1,232.
+  let messageBytes =
+    1 + // version prefix
+    3 + // message header
+    shortVecBytes(message.staticAccountKeys.length) +
+    32 * message.staticAccountKeys.length +
+    32 + // recent blockhash
+    shortVecBytes(message.compiledInstructions.length);
+  for (const instruction of message.compiledInstructions) {
+    messageBytes +=
+      1 +
+      shortVecBytes(instruction.accountKeyIndexes.length) +
+      instruction.accountKeyIndexes.length +
+      shortVecBytes(instruction.data.length) +
+      instruction.data.length;
   }
+  messageBytes += shortVecBytes(message.addressTableLookups.length);
+  for (const lookup of message.addressTableLookups) {
+    messageBytes +=
+      32 +
+      shortVecBytes(lookup.writableIndexes.length) +
+      lookup.writableIndexes.length +
+      shortVecBytes(lookup.readonlyIndexes.length) +
+      lookup.readonlyIndexes.length;
+  }
+  const signatures = message.header.numRequiredSignatures;
+  return shortVecBytes(signatures) + 64 * signatures + messageBytes;
 }
 
 /**
@@ -166,25 +229,30 @@ function measure(payer: PublicKey, instructions: TransactionInstruction[]): numb
  * A Pump fee share is IMMUTABLE once set (every re-point is refused with
  * 0x1779) — the creator gets exactly one shot. The preferred grouping
  * [createFeeSharingConfig][updateFeeSharesV2][validate_config Mode A]
- * [create ATAs] fits the 1232-byte wire limit at 1–2 legs. When it does
- * not, Mode B used to sit next to the fee share as a fake gate: it could
- * approve a different address than Mode A proved (RT8). Mode B is deleted.
- * The fallback is two transactions: Mode A + ATAs first, then the fee
- * share pointed at the PDA Mode A already proved. Cost is one extra
- * setup transaction, once.
+ * [create ATAs] fits at two legs when compiled with the verified shared
+ * setup ALT. Mode B used to sit next to the fee share as a fake gate: it
+ * could approve a different address than Mode A proved (RT8), so it remains
+ * deleted. If the full grouping does not fit, the fallback repeats Mode A in
+ * the fee-share transaction. If even that cannot fit, planning fails before
+ * the launch's first signature; validation is never silently omitted.
  */
 export function planSetupWithFeeShare(
   payer: PublicKey,
   feeShareInstructions: TransactionInstruction[],
   validateModeA: TransactionInstruction,
-  ataInstructions: TransactionInstruction[]
+  ataInstructions: TransactionInstruction[],
+  lookupTables: AddressLookupTableAccount[] = []
 ): { atomic: boolean; transactions: PlannedTransaction[] } {
   const atomicInstructions = [
     ...feeShareInstructions,
     validateModeA,
     ...ataInstructions,
   ];
-  const atomicBytes = measure(payer, atomicInstructions);
+  const atomicBytes = measureTransaction(
+    payer,
+    atomicInstructions,
+    lookupTables
+  );
   if (atomicBytes <= MAX_TRANSACTION_BYTES) {
     return {
       atomic: true,
@@ -192,24 +260,44 @@ export function planSetupWithFeeShare(
         {
           label: "fee share + validate (Mode A) + create ATAs (atomic)",
           instructions: atomicInstructions,
+          lookupTables,
           bytes: atomicBytes,
         },
       ],
     };
   }
   const setup = [validateModeA, ...ataInstructions];
+  // The fee share is immutable. Re-run the full on-chain verdict in the SAME
+  // transaction that commits it; a previously successful simulation or
+  // transaction is not a substitute. If this guarded fallback cannot fit,
+  // refuse before the launch's first signature instead of silently dropping
+  // validate_config (the bug that left the observed flow at three prompts).
+  const guardedFeeShare = [...feeShareInstructions, validateModeA];
+  const guardedFeeShareBytes = measureTransaction(
+    payer,
+    guardedFeeShare,
+    lookupTables
+  );
+  if (guardedFeeShareBytes > MAX_TRANSACTION_BYTES) {
+    throw new Error(
+      `fee share + repeated validate_config is ${guardedFeeShareBytes} bytes; ` +
+        "the verified shared setup lookup table is required"
+    );
+  }
   return {
     atomic: false,
     transactions: [
       {
         label: "validate (Mode A probe) + create ATAs",
         instructions: setup,
-        bytes: measure(payer, setup),
+        lookupTables,
+        bytes: measureTransaction(payer, setup, lookupTables),
       },
       {
-        label: "fee share (PDA already proven by Mode A)",
-        instructions: feeShareInstructions,
-        bytes: measure(payer, feeShareInstructions),
+        label: "fee share + repeated validate (Mode A)",
+        instructions: guardedFeeShare,
+        lookupTables,
+        bytes: guardedFeeShareBytes,
       },
     ],
   };
@@ -225,7 +313,8 @@ export function planSetupOnly(
   return {
     label: "validate + create ATAs (atomic)",
     instructions,
-    bytes: measure(payer, instructions),
+    lookupTables: [],
+    bytes: measureTransaction(payer, instructions),
   };
 }
 
@@ -406,14 +495,15 @@ export async function sendWithWallet(
   connection: Connection,
   wallet: SignerLike,
   instructions: TransactionInstruction[],
-  extraSigners: Keypair[] = []
+  extraSigners: Keypair[] = [],
+  lookupTables: AddressLookupTableAccount[] = []
 ): Promise<string> {
   const validity = await connection.getLatestBlockhash("confirmed");
   const message = new TransactionMessage({
     payerKey: wallet.publicKey,
     recentBlockhash: validity.blockhash,
     instructions,
-  }).compileToV0Message();
+  }).compileToV0Message(lookupTables);
   let transaction = new VersionedTransaction(message);
   if (extraSigners.length) transaction.sign(extraSigners);
   transaction = await wallet.signTransaction(transaction);
@@ -426,12 +516,16 @@ export async function sendWithWallet(
     const logs: string[] =
       (error as { logs?: string[] }).logs ??
       (typeof (error as { getLogs?: unknown }).getLogs === "function"
-        ? await (error as { getLogs: (c: Connection) => Promise<string[]> }).getLogs(connection).catch(() => [])
+        ? await (error as { getLogs: (c: Connection) => Promise<string[]> })
+            .getLogs(connection)
+            .catch(() => [])
         : []);
     const attribution = attributeFailure(logs, String(error));
     throw new SetupError(
       attribution.code !== undefined
-        ? `rejected with code ${attribution.code}${attribution.name ? ` ${attribution.name}` : ""}`
+        ? `rejected with code ${attribution.code}${
+            attribution.name ? ` ${attribution.name}` : ""
+          }`
         : String((error as Error).message ?? error).slice(0, 300),
       attribution,
       logs.slice(-8)

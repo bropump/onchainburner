@@ -16,11 +16,18 @@ function limiter() {
   };
 }
 
-function environment(rpc = limiter(), api = limiter()) {
+function environment(
+  rpc = limiter(),
+  api = limiter(),
+  burnService: { fetch: (request: Request) => Promise<Response> } = {
+    fetch: async () => Response.json({ ok: true }),
+  }
+) {
   return {
     SOLANA_RPC_URL: "https://rpc.example/key/secret-value-123456",
-    BURN_SERVICE_ORIGIN: "https://service.example",
+    BURN_SERVICE: burnService,
     ASSETS: { fetch: async () => new Response("asset") },
+    COMMUNITY_DB: {} as D1Database,
     RPC_LIMITER: rpc.binding,
     API_LIMITER: api.binding,
   };
@@ -30,14 +37,28 @@ async function main(): Promise<void> {
   const originalFetch = globalThis.fetch;
   try {
     {
+      const response = await worker.fetch(
+        new Request("https://www.cooked.diy/community?rank=sol"),
+        environment()
+      );
+      assert.equal(response.status, 308);
+      assert.equal(
+        response.headers.get("location"),
+        "https://cooked.diy/community?rank=sol"
+      );
+    }
+
+    {
       const api = limiter();
       const env = environment(limiter(), api);
       let destination: URL | undefined;
       let forwarded: Headers | undefined;
-      globalThis.fetch = async (input, init) => {
-        destination = new URL(String(input));
-        forwarded = new Headers(init?.headers);
-        return Response.json({ ok: true });
+      const burnService = {
+        fetch: async (request: Request) => {
+          destination = new URL(request.url);
+          forwarded = new Headers(request.headers);
+          return Response.json({ ok: true });
+        },
       };
       const response = await worker.fetch(
         new Request(`${WORKER_ORIGIN}/api//attacker.example/x`, {
@@ -50,10 +71,10 @@ async function main(): Promise<void> {
             "cf-ray": "must-not-travel",
           },
         }),
-        env
+        { ...env, BURN_SERVICE: burnService }
       );
       assert.equal(response.status, 200);
-      assert.equal(destination?.origin, "https://service.example");
+      assert.equal(destination?.origin, "https://quote-service.internal");
       assert.equal(destination?.pathname, "/attacker.example/x");
       assert.equal(forwarded?.get("origin"), WORKER_ORIGIN);
       assert.equal(forwarded?.get("accept"), "application/json");
@@ -133,6 +154,44 @@ async function main(): Promise<void> {
     }
 
     {
+      const rpc = limiter();
+      globalThis.fetch = async () =>
+        Response.json({ jsonrpc: "2.0", id: 1, result: [] });
+      const response = await worker.fetch(
+        new Request(`${WORKER_ORIGIN}/rpc`, {
+          method: "POST",
+          headers: {
+            origin: WORKER_ORIGIN,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getProgramAccounts",
+            params: ["11111111111111111111111111111111", { filters: [] }],
+          }),
+        }),
+        environment(rpc)
+      );
+      assert.equal(response.status, 200);
+      await response.text();
+      assert.equal(rpc.calls(), 20);
+    }
+
+    {
+      const response = await worker.fetch(
+        new Request(`${WORKER_ORIGIN}/`),
+        environment()
+      );
+      assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(response.headers.get("x-frame-options"), "DENY");
+      assert.match(
+        response.headers.get("content-security-policy") ?? "",
+        /frame-ancestors 'none'/
+      );
+    }
+
+    {
       let fetched = false;
       globalThis.fetch = async () => {
         fetched = true;
@@ -188,7 +247,11 @@ async function main(): Promise<void> {
         new Response(
           new ReadableStream<Uint8Array>({
             start(stream) {
-              stream.enqueue(encoder.encode('{"jsonrpc":"2.0","result":"https://rpc.example/key/sec'));
+              stream.enqueue(
+                encoder.encode(
+                  '{"jsonrpc":"2.0","result":"https://rpc.example/key/sec'
+                )
+              );
               stream.enqueue(encoder.encode('ret-value-123456","id":1}'));
               stream.close();
             },

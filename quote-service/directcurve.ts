@@ -35,12 +35,17 @@
 import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { PolicyError } from "./core";
-import { AccountDataReader, PUMP_FUN_ADDRESS } from "./reference";
+import type { AccountDataReader } from "./reference";
 
 /** `ResolvedReference.venue` for a live bonding curve (reference.ts). */
 export const DIRECT_CURVE_VENUE = "Pump curve";
 
-const PUMP_FUN = new PublicKey(PUMP_FUN_ADDRESS);
+// Keep the fixed program id local: reference.ts imports the direct-curve
+// builder, so reading its exported constant here creates a CommonJS cycle
+// where the value is still undefined during module initialization.
+const PUMP_FUN = new PublicKey(
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+);
 const PUMP_FEE_PROGRAM = new PublicKey(
   "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"
 );
