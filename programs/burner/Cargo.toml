@@ -39,7 +39,7 @@ spl-token-2022 = { version = "6.0.0", default-features = false, features = ["no-
 # under resolver 2, so this does not change the deployed artifact. The host
 # unit tests (`npm run test:unit`, `#[cfg(test)]` modules in src/) rely on it.
 [dev-dependencies]
-solana-address = { version = "=2.6.1", features = ["curve25519"] }
+solana-address = { version = "=2.7.0", features = ["curve25519"] }
 # Runs the deployed SBPF artifact under a deliberately malicious replacement
 # for the pinned Jupiter program.  This is a host-only dependency: it is never
 # unified into the SBF program build under resolver 2.
