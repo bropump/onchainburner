@@ -1,8 +1,16 @@
 {
   "name": "onchainburner",
   "compatibility_date": "2026-08-01",
+  // The Worker fronts the static assets so it can serve POST /rpc, which
+  // proxies Solana JSON-RPC using a server-side secret. Everything else falls
+  // through to the SPA via the ASSETS binding.
+  "main": "./worker.ts",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
   }
 }

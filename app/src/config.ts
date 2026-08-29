@@ -20,10 +20,21 @@ export const NETWORK: "demo" | "mainnet" =
  * A mainnet build never inherits localhost defaults. Cloudflare Pages can
  * override both URLs at build time without changing the static bundle code.
  */
+/**
+ * On mainnet this is same-origin `/rpc`, served by the Worker in
+ * `app/worker.ts`, which forwards to the real endpoint using a server-side
+ * secret. A keyed RPC URL must NEVER be put in VITE_RPC_URL: Vite inlines
+ * VITE_* into the bundle at build time, so it would be readable by every
+ * visitor. VITE_RPC_URL remains for local development, where it points at a
+ * fork and carries no secret.
+ */
 export const RPC_URL: string =
   String(env.VITE_RPC_URL ?? "") ||
   (NETWORK === "mainnet"
-    ? "https://api.mainnet-beta.solana.com"
+    ? // web3.js rejects a relative endpoint ("Endpoint URL must start with
+      // `http:` or `https:`"), so the same-origin proxy is made absolute at
+      // runtime rather than written as "/rpc".
+      `${globalThis.location?.origin ?? ""}/rpc`
     : "http://127.0.0.1:8899");
 
 /** The quote-service endpoint. Demo: local stand-in. Mainnet: the real one. */

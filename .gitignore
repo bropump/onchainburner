@@ -70,3 +70,7 @@ npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Cloudflare Worker local secrets — never commit
+.dev.vars
+**/.dev.vars
