@@ -20,6 +20,8 @@
   // Limits are set above honest use, not near it: one launch-page load fans
   // out into dozens of RPC calls (token metadata + reference discovery per
   // preset), so a tight limit would break the app for real users first.
+  // worker.ts charges one RPC_LIMITER unit per JSON-RPC batch element, so a
+  // 100-call batch consumes 100 units rather than bypassing this by 100x.
   "ratelimits": [
     {
       "name": "RPC_LIMITER",

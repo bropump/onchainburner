@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "e2e": "tsx e2e/headless.ts",
+    "test:worker-security": "node --import tsx e2e/worker-security.ts",
     "test:service-contract": "tsx e2e/service-contract.ts",
     "deploy": "pnpm build && wrangler deploy"
   },

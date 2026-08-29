@@ -30,6 +30,8 @@ interface Env {
   API_LIMITER?: { limit: (o: { key: string }) => Promise<{ success: boolean }> };
 }
 
+type RateLimiter = Env["RPC_LIMITER"];
+
 /** Client IP as Cloudflare sees it. Absent only outside the CF edge. */
 function clientKey(request: Request): string {
   return request.headers.get("cf-connecting-ip") ?? "unknown";
@@ -37,22 +39,39 @@ function clientKey(request: Request): string {
 
 /** Returns a 429 when over the limit, or null to proceed. */
 async function rateLimited(
-  limiter: Env["RPC_LIMITER"],
-  request: Request
+  limiter: RateLimiter,
+  request: Request,
+  units = 1
 ): Promise<Response | null> {
-  if (!limiter) return null;
-  const { success } = await limiter.limit({ key: clientKey(request) });
-  if (success) return null;
-  return new Response(
-    JSON.stringify({
-      code: "RATE_LIMITED",
-      message: "too many requests; slow down",
-    }),
-    {
-      status: 429,
-      headers: { "content-type": "application/json", "retry-after": "60" },
+  // A missing binding must fail closed. Silently proceeding here would turn a
+  // config/deployment mistake into an unlimited relay.
+  if (!limiter) {
+    return jsonError(
+      "RATE_LIMIT_UNAVAILABLE",
+      "this endpoint is temporarily unavailable",
+      503
+    );
+  }
+  const key = clientKey(request);
+  for (let unit = 0; unit < units; unit += 1) {
+    const { success } = await limiter.limit({ key });
+    if (!success) {
+      return new Response(
+        JSON.stringify({
+          code: "RATE_LIMITED",
+          message: "too many requests; slow down",
+        }),
+        {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "60",
+          },
+        }
+      );
     }
-  );
+  }
+  return null;
 }
 
 /**
@@ -117,19 +136,28 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
   if (!origin) {
-    // GET/HEAD may legitimately omit it; POST may not.
-    return request.method === "GET" || request.method === "HEAD";
+    // Same-origin GET/HEAD commonly omit Origin. Fetch Metadata still lets us
+    // reject blind cross-site resource loads and navigations in browsers.
+    // A non-browser can omit or forge both headers; this is not authentication.
+    if (request.method !== "GET" && request.method !== "HEAD") return false;
+    const site = request.headers.get("sec-fetch-site");
+    return site === null || site === "same-origin" || site === "none";
   }
-  let host: string;
+  let parsed: URL;
   try {
-    host = new URL(origin).host;
+    parsed = new URL(origin);
   } catch {
     return false;
   }
-  const self = new URL(request.url).host;
-  if (host === self) return true;
+  // Origin is an exact serialized origin, not merely a matching Host.
+  if (parsed.origin !== origin) return false;
+  const self = new URL(request.url).origin;
+  if (parsed.origin === self) return true;
   // Local development against a deployed worker.
-  return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+  return (
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(parsed.host)
+  );
 }
 
 function forbidden(): Response {
@@ -140,6 +168,16 @@ function forbidden(): Response {
     }),
     { status: 403, headers: { "content-type": "application/json" } }
   );
+}
+
+function jsonError(code: string, message: string, status: number): Response {
+  return new Response(JSON.stringify({ code, message }), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
 }
 
 function jsonRpcError(id: unknown, code: number, message: string, status = 400) {
@@ -164,7 +202,166 @@ function rejectReason(call: unknown): string | null {
   return null;
 }
 
-async function handleRpc(request: Request, env: Env): Promise<Response> {
+/** Read at most maxBytes from the wire; never buffer an unbounded body. */
+async function readTextWithCap(
+  request: Request,
+  maxBytes: number
+): Promise<string | null> {
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    const length = Number(declared);
+    if (Number.isFinite(length) && length > maxBytes) return null;
+  }
+  if (!request.body) return "";
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel("request body too large");
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function rpcSecretPatterns(rawUrl: string): Uint8Array[] {
+  const candidates = new Set<string>([rawUrl]);
+  try {
+    const url = new URL(rawUrl);
+    candidates.add(url.href);
+    for (const value of [url.username, url.password, ...url.searchParams.values()]) {
+      if (value.length >= 6) candidates.add(value);
+    }
+    for (const label of url.hostname.split(".")) {
+      if (label.length >= 6) candidates.add(label);
+    }
+    for (const field of url.search.slice(1).split("&")) {
+      const rawValue = field.slice(field.indexOf("=") + 1);
+      if (rawValue.length >= 6) candidates.add(rawValue);
+    }
+    for (const segment of url.pathname.split("/")) {
+      if (segment.length >= 6) {
+        candidates.add(segment);
+        try {
+          candidates.add(decodeURIComponent(segment));
+        } catch {
+          // The URL parser accepted it; the exact encoded form is still covered.
+        }
+      }
+    }
+  } catch {
+    // fetch will reject an invalid configured URL. The raw value is still
+    // redacted if a runtime error somehow returns it in a successful body.
+  }
+  for (const candidate of [...candidates]) {
+    candidates.add(encodeURIComponent(candidate));
+    candidates.add(candidate.replaceAll("/", "\\/"));
+  }
+  const encoder = new TextEncoder();
+  return [...candidates]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+    .map((candidate) => encoder.encode(candidate));
+}
+
+function redactBytes(input: Uint8Array, patterns: readonly Uint8Array[]) {
+  const output = input.slice();
+  for (const pattern of patterns) {
+    if (!pattern.byteLength || pattern.byteLength > input.byteLength) continue;
+    outer: for (
+      let start = 0;
+      start <= input.byteLength - pattern.byteLength;
+      start += 1
+    ) {
+      for (let offset = 0; offset < pattern.byteLength; offset += 1) {
+        if (input[start + offset] !== pattern[offset]) continue outer;
+      }
+      output.fill(0x2a, start, start + pattern.byteLength);
+    }
+  }
+  return output;
+}
+
+function concatenate(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const combined = new Uint8Array(left.byteLength + right.byteLength);
+  combined.set(left);
+  combined.set(right, left.byteLength);
+  return combined;
+}
+
+/** Keep the deadline alive and redact the configured URL across chunk edges. */
+function safeRpcResponseBody(
+  body: ReadableStream<Uint8Array>,
+  controller: AbortController,
+  timer: ReturnType<typeof setTimeout>,
+  secretUrl: string
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const patterns = rpcSecretPatterns(secretUrl);
+  const retainedBytes = Math.max(
+    0,
+    ...patterns.map((pattern) => pattern.byteLength - 1)
+  );
+  let pending = new Uint8Array();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(stream) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            if (pending.byteLength) {
+              stream.enqueue(redactBytes(pending, patterns));
+              pending = new Uint8Array();
+            }
+            finish();
+            stream.close();
+            return;
+          }
+          const combined = concatenate(pending, value);
+          const redacted = redactBytes(combined, patterns);
+          const emitBytes = Math.max(0, combined.byteLength - retainedBytes);
+          pending = redacted.slice(emitBytes);
+          if (emitBytes > 0) {
+            stream.enqueue(redacted.slice(0, emitBytes));
+            return;
+          }
+        }
+      } catch (error) {
+        finish();
+        stream.error(error);
+      }
+    },
+    async cancel(reason) {
+      finish();
+      controller.abort();
+      await reader.cancel(reason);
+    },
+  });
+}
+
+async function handleRpc(
+  request: Request,
+  env: Env,
+  initialRateUnitConsumed: boolean
+): Promise<Response> {
   if (request.method !== "POST") {
     return jsonRpcError(null, -32600, "POST required", 405);
   }
@@ -178,8 +375,8 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     );
   }
 
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) {
+  const raw = await readTextWithCap(request, MAX_BODY_BYTES);
+  if (raw === null) {
     return jsonRpcError(null, -32600, "request too large", 413);
   }
 
@@ -208,6 +405,14 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  // The edge consumed one unit before reading the body. Consume the rest so a
+  // 100-call JSON-RPC batch costs 100 units, not one.
+  const remainingUnits = calls.length - (initialRateUnitConsumed ? 1 : 0);
+  if (remainingUnits > 0) {
+    const limited = await rateLimited(env.RPC_LIMITER, request, remainingUnits);
+    if (limited) return limited;
+  }
+
   // Forward the RE-SERIALIZED body, never the caller's raw bytes.
   //
   // With a duplicate key — {"method":"requestAirdrop","method":"getSlot"} —
@@ -221,6 +426,7 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  let bodyOwnsTimer = false;
   try {
     // Workers' fetch supports redirect "follow" | "manual" only — "error"
     // throws before the request is made. "manual" is what we want anyway: a
@@ -234,15 +440,40 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       redirect: "manual",
     });
     if (upstream.status >= 300 && upstream.status < 400) {
+      await upstream.body?.cancel();
       return jsonRpcError(null, -32603, "rpc upstream redirected", 502);
     }
+    if (!upstream.ok) {
+      // Provider error pages sometimes echo their request URL. Never relay an
+      // HTTP-level upstream body because that URL contains the secret key.
+      await upstream.body?.cancel();
+      return jsonRpcError(
+        null,
+        -32603,
+        "rpc upstream rejected request",
+        upstream.status
+      );
+    }
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (!/^application\/json\b/i.test(contentType)) {
+      await upstream.body?.cancel();
+      return jsonRpcError(null, -32603, "invalid rpc upstream response", 502);
+    }
+    const body = upstream.body
+      ? safeRpcResponseBody(
+          upstream.body,
+          controller,
+          timer,
+          env.SOLANA_RPC_URL
+        )
+      : null;
+    bodyOwnsTimer = body !== null;
     // Pass the body through as-is, but never the upstream's headers: they can
     // carry provider identifiers, and the URL itself must never be echoed.
-    return new Response(upstream.body, {
+    return new Response(body, {
       status: upstream.status,
       headers: {
-        "content-type":
-          upstream.headers.get("content-type") ?? "application/json",
+        "content-type": "application/json",
         "cache-control": "no-store",
       },
     });
@@ -256,7 +487,7 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       aborted ? 504 : 502
     );
   } finally {
-    clearTimeout(timer);
+    if (!bodyOwnsTimer) clearTimeout(timer);
   }
 }
 
@@ -278,6 +509,36 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
       { status: 503, headers: { "content-type": "application/json" } }
     );
   }
+  if (!["GET", "HEAD", "POST", "OPTIONS"].includes(request.method)) {
+    return jsonError("METHOD_NOT_ALLOWED", "method not allowed", 405);
+  }
+
+  const configured = env.BURN_SERVICE_ORIGIN.replace(/\/$/, "");
+  let base: URL;
+  try {
+    base = new URL(configured);
+  } catch {
+    return jsonError(
+      "BURN_SERVICE_MISCONFIGURED",
+      "the burn service is unavailable",
+      503
+    );
+  }
+  const localHttp =
+    base.protocol === "http:" &&
+    (base.hostname === "localhost" || base.hostname === "127.0.0.1");
+  if (
+    base.origin !== configured ||
+    (base.protocol !== "https:" && !localHttp) ||
+    base.username ||
+    base.password
+  ) {
+    return jsonError(
+      "BURN_SERVICE_MISCONFIGURED",
+      "the burn service is unavailable",
+      503
+    );
+  }
   const url = new URL(request.url);
 
   // Build the target from the configured origin and a path that cannot
@@ -290,7 +551,6 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   // fix. Collapsing leading slashes removes that, and the origin is asserted
   // afterwards so any future parsing surprise fails closed rather than
   // silently forwarding somewhere else.
-  const base = new URL(env.BURN_SERVICE_ORIGIN);
   const suffix = url.pathname.slice("/api".length).replace(/^\/+/, "/");
   const target = new URL(base.origin);
   target.pathname = suffix || "/";
@@ -303,13 +563,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   }
 
   // Forward only what the service needs. Passing request.headers wholesale
-  // sends the visitor's cookies and this site's CF headers to a third-party
-  // origin; nothing downstream reads them, so they should not travel.
+  // sends the visitor's cookies, Authorization, Referer, X-Forwarded-For and
+  // arbitrary CF-* headers to a third-party origin. Origin is intentionally
+  // retained because the paid metadata endpoint validates it.
   const headers = new Headers();
-  const contentType = request.headers.get("content-type");
-  if (contentType) headers.set("content-type", contentType);
-  const accept = request.headers.get("accept");
-  if (accept) headers.set("accept", accept);
+  for (const name of ["accept", "content-type", "origin"] as const) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
 
   const upstream = await fetch(target, {
     method: request.method,
@@ -320,6 +581,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
         : request.body,
     redirect: "manual",
   });
+  if (upstream.status >= 300 && upstream.status < 400) {
+    await upstream.body?.cancel();
+    return jsonError("BURN_SERVICE_REDIRECTED", "burn service redirected", 502);
+  }
   return new Response(upstream.body, {
     status: upstream.status,
     headers: {
@@ -337,14 +602,20 @@ export default {
       url.pathname === "/rpc" ||
       url.pathname === "/api" ||
       url.pathname.startsWith("/api/");
-    if (isEndpoint && !isAllowedOrigin(request)) return forbidden();
-    if (url.pathname === "/rpc") {
-      const limited = await rateLimited(env.RPC_LIMITER, request);
-      return limited ?? handleRpc(request, env);
-    }
-    if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
-      const limited = await rateLimited(env.API_LIMITER, request);
-      return limited ?? handleApi(request, env);
+    if (isEndpoint) {
+      try {
+        if (!isAllowedOrigin(request)) return forbidden();
+        if (url.pathname === "/rpc") {
+          const limited = await rateLimited(env.RPC_LIMITER, request);
+          return limited ?? handleRpc(request, env, true);
+        }
+        const limited = await rateLimited(env.API_LIMITER, request);
+        return limited ?? handleApi(request, env);
+      } catch {
+        // Cloudflare's 1101 page is generic, but key secrecy should not depend
+        // on platform error rendering. Never return exception text or a URL.
+        return jsonError("UPSTREAM_UNAVAILABLE", "upstream unavailable", 502);
+      }
     }
     return env.ASSETS.fetch(request);
   },
