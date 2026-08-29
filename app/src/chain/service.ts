@@ -347,23 +347,34 @@ export function makeService(baseUrl: string, callerPaid = false) {
         imageBytes: result.imageBytes,
       };
     },
-    uploadMetadata(
+    async uploadMetadata(
       request: MetadataUploadRequest
     ): Promise<MetadataUploadReceipt> {
+      const payload = {
+        name: request.name,
+        symbol: request.symbol,
+        description: request.description,
+        ...(request.links && Object.keys(request.links).length
+          ? { links: request.links }
+          : {}),
+        image: {
+          contentType: request.imageContentType,
+          dataBase64: Buffer.from(request.image).toString("base64"),
+        },
+      };
+      // The same editable fields and normalized image always produce the same
+      // request id. If the browser times out after Irys has accepted the paid
+      // writes, pressing Launch again retrieves the stored receipt instead of
+      // paying for duplicate permanent uploads.
+      const requestId = await sha256Hex(
+        new TextEncoder().encode(JSON.stringify(payload))
+      );
       return post<MetadataUploadReceipt>(
         baseUrl,
         "/metadata/finalize",
         {
-          name: request.name,
-          symbol: request.symbol,
-          description: request.description,
-          ...(request.links && Object.keys(request.links).length
-            ? { links: request.links }
-            : {}),
-          image: {
-            contentType: request.imageContentType,
-            dataBase64: Buffer.from(request.image).toString("base64"),
-          },
+          requestId,
+          ...payload,
         },
         BURN_DEADLINE_MS,
         "the browser stopped waiting for the metadata upload; it may still complete, so wait before uploading the same image again"

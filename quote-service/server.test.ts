@@ -336,6 +336,7 @@ describe("keyless HTTP boundary", () => {
     );
     const png = Buffer.from("89504e470d0a1a0a", "hex");
     const request = {
+      requestId: "a".repeat(64),
       name: "Burner",
       symbol: "BURN",
       description: "Permanent metadata",
@@ -407,6 +408,7 @@ describe("keyless HTTP boundary", () => {
       }
     );
     const body = JSON.stringify({
+      requestId: "b".repeat(64),
       name: "Burner",
       symbol: "BURN",
       description: "",

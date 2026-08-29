@@ -115,6 +115,8 @@ export const ACCEPTED_METADATA_IMAGE_TYPES = [
 ] as const;
 
 export type MetadataUploadInput = Readonly<{
+  /** Content-derived browser id used to replay a paid upload safely. */
+  requestId?: string;
   name: string;
   symbol: string;
   description: string;
@@ -259,7 +261,7 @@ function parseMetadataLinks(
 
 export function parseMetadataUploadRequest(
   parsed: JsonBody
-): MetadataUploadInput {
+): MetadataUploadInput & { requestId: string } {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new MetadataUploadError(
       "INVALID_UPLOAD_REQUEST",
@@ -269,12 +271,29 @@ export function parseMetadataUploadRequest(
   }
   const object = parsed as Record<string, unknown>;
   const unknown = Object.keys(object).filter(
-    (key) => !["name", "symbol", "description", "image", "links"].includes(key)
+    (key) =>
+      ![
+        "requestId",
+        "name",
+        "symbol",
+        "description",
+        "image",
+        "links",
+      ].includes(key)
   );
   if (unknown.length) {
     throw new MetadataUploadError(
       "INVALID_UPLOAD_REQUEST",
       `metadata upload contains unsupported fields: ${unknown.join(",")}`,
+      400
+    );
+  }
+  const requestId =
+    typeof object.requestId === "string" ? object.requestId : "";
+  if (!/^[0-9a-f]{64}$/.test(requestId)) {
+    throw new MetadataUploadError(
+      "INVALID_UPLOAD_REQUEST",
+      "requestId must be a 64-character lowercase content digest",
       400
     );
   }
@@ -384,6 +403,7 @@ export function parseMetadataUploadRequest(
     );
   }
   return {
+    requestId,
     name,
     symbol,
     description,
@@ -416,6 +436,7 @@ export function parseMetadataImagePrepareRequest(
   // Reuse the permanent boundary's strict MIME, base64, signature, and size
   // validation with harmless placeholder metadata, then retain only image.
   const validated = parseMetadataUploadRequest({
+    requestId: "0".repeat(64),
     name: "draft",
     symbol: "DRAFT",
     description: "",

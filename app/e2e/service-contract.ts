@@ -157,6 +157,11 @@ async function main() {
       "the description at confirmation time",
     "final metadata did not use the confirmation-time fields"
   );
+  check(
+    typeof metadataFinalizeBody?.requestId === "string" &&
+      /^[0-9a-f]{64}$/.test(String(metadataFinalizeBody.requestId)),
+    "final metadata did not carry a stable content-derived request id"
+  );
 
   safe = false;
   let rejected = false;

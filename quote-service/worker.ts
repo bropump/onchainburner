@@ -10,6 +10,7 @@ import {
   buildProductionWiring,
   LogSink,
   MAX_METADATA_UPLOAD_REQUEST_BYTES,
+  MetadataUploadResult,
   metadataPipelineFromEnvironment,
 } from "./server";
 import { BurnFetchHandler, createBurnFetchHandler } from "./fetch-handler";
@@ -31,12 +32,16 @@ export interface QuoteWorkerEnv {
 type MetadataGateResult =
   | { kind: "acquired"; token: string }
   | { kind: "busy" }
-  | { kind: "rate"; retryAfter: number };
+  | { kind: "rate"; retryAfter: number }
+  | { kind: "processing"; retryAfter: number }
+  | { kind: "conflict" }
+  | { kind: "replay"; result: MetadataUploadResult };
 
 const METADATA_RATE_WINDOW_MS = 60 * 60 * 1_000;
 const METADATA_RATE_PER_IP = 3;
 const METADATA_RATE_GLOBAL = 30;
 const METADATA_LEASE_MS = 3 * 60 * 1_000;
+const METADATA_RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * One deliberately global coordination atom for paid metadata writes. The
@@ -59,13 +64,31 @@ export class MetadataUploadGateV3 extends DurableObject<QuoteWorkerEnv> {
           token TEXT PRIMARY KEY,
           expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS upload_jobs (
+          request_id TEXT PRIMARY KEY,
+          request_hash TEXT NOT NULL,
+          state TEXT NOT NULL,
+          lease_token TEXT,
+          result_json TEXT,
+          expires_at INTEGER NOT NULL
+        );
       `);
     });
   }
 
-  async acquire(clientKey: string): Promise<MetadataGateResult> {
+  async acquire(
+    clientKey: string,
+    requestId: string,
+    requestHash: string
+  ): Promise<MetadataGateResult> {
     if (!/^[0-9a-f]{64}$/.test(clientKey)) {
       throw new Error("invalid metadata client key");
+    }
+    if (
+      !/^[0-9a-f]{64}$/.test(requestId) ||
+      !/^[0-9a-f]{64}$/.test(requestHash)
+    ) {
+      throw new Error("invalid metadata idempotency key");
     }
     const now = Date.now();
     const result = this.ctx.storage.transactionSync<MetadataGateResult>(() => {
@@ -73,6 +96,38 @@ export class MetadataUploadGateV3 extends DurableObject<QuoteWorkerEnv> {
         "DELETE FROM leases WHERE expires_at <= ?",
         now
       );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM upload_jobs WHERE expires_at <= ?",
+        now
+      );
+      const prior = this.ctx.storage.sql
+        .exec<{
+          request_hash: string;
+          state: string;
+          result_json: string | null;
+          expires_at: number;
+        }>(
+          `SELECT request_hash, state, result_json, expires_at
+           FROM upload_jobs WHERE request_id = ?`,
+          requestId
+        )
+        .toArray()[0];
+      if (prior) {
+        if (prior.request_hash !== requestHash) return { kind: "conflict" };
+        if (prior.state === "complete" && prior.result_json) {
+          return {
+            kind: "replay",
+            result: JSON.parse(prior.result_json) as MetadataUploadResult,
+          };
+        }
+        return {
+          kind: "processing",
+          retryAfter: Math.max(
+            1,
+            Math.min(30, Math.ceil((prior.expires_at - now) / 1_000))
+          ),
+        };
+      }
       const active = this.ctx.storage.sql
         .exec<{ count: number }>("SELECT COUNT(*) AS count FROM leases")
         .toArray()[0]?.count;
@@ -140,6 +195,15 @@ export class MetadataUploadGateV3 extends DurableObject<QuoteWorkerEnv> {
         token,
         now + METADATA_LEASE_MS
       );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO upload_jobs
+          (request_id, request_hash, state, lease_token, result_json, expires_at)
+         VALUES (?, ?, 'processing', ?, NULL, ?)`,
+        requestId,
+        requestHash,
+        token,
+        now + METADATA_LEASE_MS
+      );
       return { kind: "acquired", token };
     });
     if (result.kind === "acquired") {
@@ -150,6 +214,62 @@ export class MetadataUploadGateV3 extends DurableObject<QuoteWorkerEnv> {
       }
     }
     return result;
+  }
+
+  async complete(
+    token: string,
+    requestId: string,
+    result: MetadataUploadResult
+  ): Promise<void> {
+    if (
+      !/^[0-9a-f-]{36}$/.test(token) ||
+      !/^[0-9a-f]{64}$/.test(requestId)
+    ) {
+      throw new Error("invalid metadata completion key");
+    }
+    const encoded = JSON.stringify(result);
+    if (encoded.length > 8_192) throw new Error("metadata receipt too large");
+    const expiresAt = Date.now() + METADATA_RECEIPT_TTL_MS;
+    const updated = this.ctx.storage.transactionSync(() => {
+      const row = this.ctx.storage.sql
+        .exec<{ lease_token: string | null }>(
+          "SELECT lease_token FROM upload_jobs WHERE request_id = ?",
+          requestId
+        )
+        .toArray()[0];
+      if (!row || row.lease_token !== token) return false;
+      this.ctx.storage.sql.exec(
+        `UPDATE upload_jobs SET state = 'complete', lease_token = NULL,
+          result_json = ?, expires_at = ? WHERE request_id = ?`,
+        encoded,
+        expiresAt,
+        requestId
+      );
+      this.ctx.storage.sql.exec("DELETE FROM leases WHERE token = ?", token);
+      return true;
+    });
+    if (!updated) throw new Error("metadata completion lease not found");
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > expiresAt) {
+      await this.ctx.storage.setAlarm(expiresAt);
+    }
+  }
+
+  async fail(token: string, requestId: string): Promise<void> {
+    if (
+      !/^[0-9a-f-]{36}$/.test(token) ||
+      !/^[0-9a-f]{64}$/.test(requestId)
+    ) {
+      return;
+    }
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM upload_jobs WHERE request_id = ? AND lease_token = ?",
+        requestId,
+        token
+      );
+      this.ctx.storage.sql.exec("DELETE FROM leases WHERE token = ?", token);
+    });
   }
 
   async release(token: string): Promise<void> {
@@ -168,16 +288,30 @@ export class MetadataUploadGateV3 extends DurableObject<QuoteWorkerEnv> {
         "DELETE FROM rate_windows WHERE scope != 'global' AND started_at <= ?",
         now - METADATA_RATE_WINDOW_MS
       );
-      return this.ctx.storage.sql
-        .exec<{ started_at: number }>(
+      this.ctx.storage.sql.exec(
+        "DELETE FROM upload_jobs WHERE expires_at <= ?",
+        now
+      );
+      const windowStart = this.ctx.storage.sql
+        .exec<{ started_at: number | null }>(
           "SELECT MIN(started_at) AS started_at FROM rate_windows WHERE scope != 'global'"
         )
         .toArray()[0]?.started_at;
+      const jobExpiry = this.ctx.storage.sql
+        .exec<{ expires_at: number | null }>(
+          "SELECT MIN(expires_at) AS expires_at FROM upload_jobs"
+        )
+        .toArray()[0]?.expires_at;
+      const candidates = [
+        Number.isFinite(windowStart)
+          ? Number(windowStart) + METADATA_RATE_WINDOW_MS + 1_000
+          : undefined,
+        Number.isFinite(jobExpiry) ? Number(jobExpiry) + 1_000 : undefined,
+      ].filter((value): value is number => value !== undefined);
+      return candidates.length ? Math.min(...candidates) : undefined;
     });
     if (Number.isFinite(nextStartedAt)) {
-      await this.ctx.storage.setAlarm(
-        Number(nextStartedAt) + METADATA_RATE_WINDOW_MS + 1_000
-      );
+      await this.ctx.storage.setAlarm(Number(nextStartedAt));
     }
   }
 }
@@ -308,9 +442,22 @@ async function initialize(env: QuoteWorkerEnv): Promise<BurnFetchHandler> {
       // cached across requests, so a stub captured here would work once and
       // then fail with "Cannot perform I/O on behalf of a different request".
       // Resolve a fresh stub for every RPC instead.
-      acquire: async (ip) =>
+      acquire: async (ip, requestId, requestFingerprint) =>
         env.METADATA_UPLOAD_GATE!.getByName("paid-metadata-v3").acquire(
-          await metadataClientKey(ip)
+          await metadataClientKey(ip),
+          requestId,
+          requestFingerprint
+        ),
+      complete: async (token, requestId, result) =>
+        env.METADATA_UPLOAD_GATE!.getByName("paid-metadata-v3").complete(
+          token,
+          requestId,
+          result
+        ),
+      fail: async (token, requestId) =>
+        env.METADATA_UPLOAD_GATE!.getByName("paid-metadata-v3").fail(
+          token,
+          requestId
         ),
       release: async (token) =>
         env.METADATA_UPLOAD_GATE!.getByName("paid-metadata-v3").release(token),

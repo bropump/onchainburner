@@ -168,7 +168,21 @@ async function main(): Promise<void> {
             jsonrpc: "2.0",
             id: 1,
             method: "getProgramAccounts",
-            params: ["11111111111111111111111111111111", { filters: [] }],
+            params: [
+              "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+              {
+                filters: [
+                  { dataSize: 752 },
+                  {
+                    memcmp: {
+                      offset: 400,
+                      bytes: "So11111111111111111111111111111111111111112",
+                    },
+                  },
+                ],
+                dataSlice: { offset: 0, length: 0 },
+              },
+            ],
           }),
         }),
         environment(rpc)
@@ -176,6 +190,53 @@ async function main(): Promise<void> {
       assert.equal(response.status, 200);
       await response.text();
       assert.equal(rpc.calls(), 20);
+    }
+
+    for (const params of [
+      [
+        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+        { filters: [] },
+      ],
+      [
+        "11111111111111111111111111111111",
+        {
+          filters: [
+            { dataSize: 752 },
+            {
+              memcmp: {
+                offset: 400,
+                bytes: "So11111111111111111111111111111111111111112",
+              },
+            },
+          ],
+        },
+      ],
+    ]) {
+      const rpc = limiter();
+      let fetched = false;
+      globalThis.fetch = async () => {
+        fetched = true;
+        return Response.json({ jsonrpc: "2.0", id: 1, result: [] });
+      };
+      const response = await worker.fetch(
+        new Request(`${WORKER_ORIGIN}/rpc`, {
+          method: "POST",
+          headers: {
+            origin: WORKER_ORIGIN,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getProgramAccounts",
+            params,
+          }),
+        }),
+        environment(rpc)
+      );
+      assert.equal(response.status, 400);
+      assert.equal(fetched, false);
+      assert.equal(rpc.calls(), 1);
     }
 
     {

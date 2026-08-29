@@ -122,6 +122,8 @@ describe("quote-service Worker transport", () => {
             acquiredFor = ip;
             return { kind: "rate", retryAfter: 321 };
           },
+          complete: async () => undefined,
+          fail: async () => undefined,
           release: async () => undefined,
         },
       }
@@ -135,6 +137,7 @@ describe("quote-service Worker transport", () => {
           "cf-connecting-ip": "203.0.113.10",
         },
         body: JSON.stringify({
+          requestId: "a".repeat(64),
           name: "Cooked",
           symbol: "COOK",
           description: "fixture",
@@ -152,6 +155,70 @@ describe("quote-service Worker transport", () => {
     expect(response.headers.get("retry-after")).to.equal("321");
     expect(acquiredFor).to.equal("203.0.113.10");
     expect(uploaded).to.equal(0);
+  });
+
+  it("replays a persisted receipt for the same paid upload request", async () => {
+    const requestId = "d".repeat(64);
+    const receipt = {
+      uri: `https://gateway.irys.xyz/${"m".repeat(43)}`,
+      imageUri: `https://gateway.irys.xyz/${"i".repeat(43)}`,
+      deliveryImageUri: `https://images.example/irys/${"i".repeat(43)}`,
+      originalImageBytes: 8,
+      imageBytes: 12,
+    };
+    let uploaded = 0;
+    let stored: typeof receipt | undefined;
+    const handler = createBurnFetchHandler(
+      { execute: async () => ({ status: "unused" } as never) },
+      {
+        allowedOrigins: [ORIGIN],
+        metadataUpload: async () => {
+          uploaded += 1;
+          return receipt;
+        },
+        metadataUploadGate: {
+          acquire: async (_ip, id, fingerprint) => {
+            expect(id).to.equal(requestId);
+            expect(fingerprint).to.match(/^[0-9a-f]{64}$/);
+            return stored
+              ? { kind: "replay" as const, result: stored }
+              : { kind: "acquired" as const, token: crypto.randomUUID() };
+          },
+          complete: async (_token, id, result) => {
+            expect(id).to.equal(requestId);
+            stored = result as typeof receipt;
+          },
+          fail: async () => undefined,
+          release: async () => undefined,
+        },
+      }
+    );
+    const body = JSON.stringify({
+      requestId,
+      name: "Cooked",
+      symbol: "COOK",
+      description: "fixture",
+      image: {
+        contentType: "image/png",
+        dataBase64: Buffer.from("89504e470d0a1a0a", "hex").toString("base64"),
+      },
+    });
+    const send = () =>
+      handler(
+        new Request("https://internal/metadata/finalize", {
+          method: "POST",
+          headers: {
+            origin: ORIGIN,
+            "content-type": "application/json",
+          },
+          body,
+        })
+      );
+    expect((await send()).status).to.equal(200);
+    const replay = await send();
+    expect(replay.status).to.equal(200);
+    expect(await replay.json()).to.deep.equal(receipt);
+    expect(uploaded).to.equal(1);
   });
 
   it("prepares the image on Cloudflare without creating permanent metadata", async () => {

@@ -12,7 +12,11 @@
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // Canonical-host redirects and security headers must also run for files
+    // that exist in the asset manifest. Without this, www serves index.html
+    // directly and the SPA later fails every same-origin API call.
+    "run_worker_first": true
   },
   "observability": {
     "enabled": true

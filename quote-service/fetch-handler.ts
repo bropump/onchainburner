@@ -55,12 +55,23 @@ export type BurnFetchOptions = Readonly<{
   ) => Promise<MetadataImagePrepareResult>;
   metadataUploadGate?: Readonly<{
     acquire(
-      ip: string
+      ip: string,
+      requestId: string,
+      requestFingerprint: string
     ): Promise<
       | { kind: "acquired"; token: string }
       | { kind: "busy" }
       | { kind: "rate"; retryAfter: number }
+      | { kind: "processing"; retryAfter: number }
+      | { kind: "conflict" }
+      | { kind: "replay"; result: MetadataUploadResult }
     >;
+    complete(
+      token: string,
+      requestId: string,
+      result: MetadataUploadResult
+    ): Promise<void>;
+    fail(token: string, requestId: string): Promise<void>;
     release(token: string): Promise<void>;
   }>;
   allowedOrigins?: readonly string[];
@@ -163,6 +174,14 @@ function decodeJson(bytes: Uint8Array): JsonBody | "INVALID_JSON" {
   } catch {
     return "INVALID_JSON";
   }
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function uploadOriginAllowed(
@@ -334,7 +353,7 @@ export function createBurnFetchHandler(
         message: "request body is not valid JSON",
       });
     }
-    let input: MetadataUploadInput;
+    let input: ReturnType<typeof parseMetadataUploadRequest>;
     try {
       input = parseMetadataUploadRequest(parsed);
     } catch (error) {
@@ -357,8 +376,34 @@ export function createBurnFetchHandler(
     if (options.metadataUploadGate) {
       try {
         const gate = await options.metadataUploadGate.acquire(
-          clientIp(request)
+          clientIp(request),
+          input.requestId,
+          await sha256Hex(body)
         );
+        if (gate.kind === "replay") {
+          emit("info", "metadata-upload-replayed", {
+            requestId: input.requestId,
+            ms: Date.now() - startedAt,
+          });
+          return json(200, gate.result);
+        }
+        if (gate.kind === "processing") {
+          return json(
+            409,
+            {
+              code: "UPLOAD_PROCESSING",
+              message:
+                "this metadata upload is still processing; retry shortly with the same launch details",
+            },
+            { "retry-after": String(gate.retryAfter) }
+          );
+        }
+        if (gate.kind === "conflict") {
+          return json(409, {
+            code: "IDEMPOTENCY_CONFLICT",
+            message: "requestId was already used for different metadata",
+          });
+        }
         if (gate.kind === "busy") {
           return json(429, {
             code: "SERVER_BUSY",
@@ -397,8 +442,35 @@ export function createBurnFetchHandler(
       );
     }
 
-    const execution = Promise.resolve().then(() =>
+    const paidExecution = Promise.resolve().then(() =>
       options.metadataUpload!(input)
+    );
+    // Persist the receipt before considering the operation settled. A browser
+    // that timed out can submit the exact same content-derived request id and
+    // receive this receipt without a second paid Irys upload.
+    const execution = paidExecution.then(
+      async (result) => {
+        if (gateToken && options.metadataUploadGate) {
+          await options.metadataUploadGate.complete(
+            gateToken,
+            input.requestId,
+            result
+          );
+        }
+        return result;
+      },
+      async (error) => {
+        if (gateToken && options.metadataUploadGate) {
+          try {
+            await options.metadataUploadGate.fail(gateToken, input.requestId);
+          } catch {
+            emit("error", "metadata-upload-gate-fail-error", {
+              code: "METADATA_UPLOAD_GATE_UNAVAILABLE",
+            });
+          }
+        }
+        throw error;
+      }
     );
     const tracked = execution.catch(() => undefined);
     metadataUploadsInflight += 1;

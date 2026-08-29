@@ -116,6 +116,14 @@ const RPC_METHOD_UNITS: Readonly<Record<string, number>> = {
 };
 const MAX_RPC_UNITS_PER_REQUEST = 120;
 
+/** Pool scans are the only getProgramAccounts use this public relay permits. */
+const POOL_SCAN_PROGRAMS = new Set([
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", // Raydium v4
+  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C", // Raydium CP
+  "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", // Raydium CLMM
+  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // Meteora DLMM
+]);
+
 /** A single JSON-RPC request body is small; a batch of them is still small. */
 const MAX_BODY_BYTES = 256 * 1024;
 /**
@@ -222,6 +230,81 @@ function rejectReason(call: unknown): string | null {
   const method = (call as { method?: unknown }).method;
   if (typeof method !== "string") return "missing method";
   if (!ALLOWED_METHODS.has(method)) return `method not allowed: ${method}`;
+  if (method === "getProgramAccounts") {
+    const params = (call as { params?: unknown }).params;
+    if (!Array.isArray(params) || params.length !== 2) {
+      return "getProgramAccounts requires a program and bounded scan config";
+    }
+    if (typeof params[0] !== "string" || !POOL_SCAN_PROGRAMS.has(params[0])) {
+      return "getProgramAccounts program is not a supported pool venue";
+    }
+    const config = params[1];
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      return "getProgramAccounts requires a bounded scan config";
+    }
+    const filters = (config as { filters?: unknown }).filters;
+    if (!Array.isArray(filters) || filters.length < 2 || filters.length > 4) {
+      return "getProgramAccounts requires 2 to 4 bounded filters";
+    }
+    let dataSizeFilters = 0;
+    let memcmpFilters = 0;
+    for (const filter of filters) {
+      if (!filter || typeof filter !== "object" || Array.isArray(filter)) {
+        return "getProgramAccounts contains an invalid filter";
+      }
+      const record = filter as Record<string, unknown>;
+      const keys = Object.keys(record);
+      if (
+        keys.length === 1 &&
+        keys[0] === "dataSize" &&
+        Number.isInteger(record.dataSize) &&
+        Number(record.dataSize) > 0 &&
+        Number(record.dataSize) <= 10_000
+      ) {
+        dataSizeFilters += 1;
+        continue;
+      }
+      if (keys.length === 1 && keys[0] === "memcmp") {
+        const memcmp = record.memcmp;
+        if (!memcmp || typeof memcmp !== "object" || Array.isArray(memcmp)) {
+          return "getProgramAccounts contains an invalid memcmp filter";
+        }
+        const value = memcmp as Record<string, unknown>;
+        if (
+          Object.keys(value).some(
+            (key) => !["offset", "bytes", "encoding"].includes(key)
+          ) ||
+          !Number.isInteger(value.offset) ||
+          Number(value.offset) < 0 ||
+          Number(value.offset) > 10_000 ||
+          typeof value.bytes !== "string" ||
+          value.bytes.length < 32 ||
+          value.bytes.length > 44 ||
+          (value.encoding !== undefined && value.encoding !== "base58")
+        ) {
+          return "getProgramAccounts contains an invalid memcmp filter";
+        }
+        memcmpFilters += 1;
+        continue;
+      }
+      return "getProgramAccounts contains an unsupported filter";
+    }
+    if (dataSizeFilters !== 1 || memcmpFilters < 1) {
+      return "getProgramAccounts requires one dataSize and at least one memcmp filter";
+    }
+    const dataSlice = (config as { dataSlice?: unknown }).dataSlice;
+    if (dataSlice !== undefined) {
+      if (
+        !dataSlice ||
+        typeof dataSlice !== "object" ||
+        Array.isArray(dataSlice) ||
+        (dataSlice as { offset?: unknown }).offset !== 0 ||
+        (dataSlice as { length?: unknown }).length !== 0
+      ) {
+        return "getProgramAccounts dataSlice must request zero bytes";
+      }
+    }
+  }
   return null;
 }
 
