@@ -353,6 +353,53 @@ export type SignerLike = {
   signTransaction(tx: VersionedTransaction): Promise<VersionedTransaction>;
 };
 
+/**
+ * Confirm over HTTP only, by polling `getSignatureStatuses` until the
+ * signature is confirmed or its blockhash expires.
+ *
+ * `connection.confirmTransaction` cannot be used here. It subscribes to
+ * `signatureSubscribe` over a WebSocket, and web3.js derives that endpoint
+ * from the HTTP one — so against the same-origin `/rpc` proxy it would dial
+ * `wss://<origin>/rpc`, which the Worker does not serve. The subscription
+ * never opens, and the call sits there until the block height is exceeded and
+ * then reports failure for a transaction that may well have landed. Polling
+ * asks the same question over the transport we actually have.
+ */
+async function confirmByPolling(
+  connection: Connection,
+  signature: string,
+  lastValidBlockHeight: number
+): Promise<{ value: { err: unknown } }> {
+  const POLL_MS = 1000;
+  for (;;) {
+    const statuses = await connection.getSignatureStatuses([signature]);
+    const status = statuses.value[0];
+    if (status) {
+      const level = status.confirmationStatus;
+      if (status.err) return { value: { err: status.err } };
+      if (level === "confirmed" || level === "finalized") {
+        return { value: { err: null } };
+      }
+    }
+    // A signature the cluster has never seen is only decisive once its
+    // blockhash can no longer be accepted; until then it may still land.
+    const height = await connection.getBlockHeight("confirmed");
+    if (height > lastValidBlockHeight) {
+      const late = await connection.getSignatureStatuses([signature]);
+      const lateStatus = late.value[0];
+      if (lateStatus && !lateStatus.err) return { value: { err: null } };
+      return {
+        value: {
+          err:
+            lateStatus?.err ??
+            `block height ${height} exceeded ${lastValidBlockHeight} without confirmation`,
+        },
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+}
+
 /** Compile, sign (wallet + any extra keypairs), send, confirm. Failures are
  * attributed to the program that raised them and thrown as SetupError. */
 export async function sendWithWallet(
@@ -390,13 +437,10 @@ export async function sendWithWallet(
       logs.slice(-8)
     );
   }
-  const confirmed = await connection.confirmTransaction(
-    {
-      signature,
-      blockhash: validity.blockhash,
-      lastValidBlockHeight: validity.lastValidBlockHeight,
-    },
-    "confirmed"
+  const confirmed = await confirmByPolling(
+    connection,
+    signature,
+    validity.lastValidBlockHeight
   );
   if (confirmed.value.err) {
     const landed = await connection.getTransaction(signature, {
