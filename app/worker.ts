@@ -279,13 +279,41 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
     );
   }
   const url = new URL(request.url);
-  const target = new URL(
-    url.pathname.slice("/api".length) + url.search,
-    env.BURN_SERVICE_ORIGIN
-  );
+
+  // Build the target from the configured origin and a path that cannot
+  // change the host.
+  //
+  // Resolving the client path against the origin directly is an SSRF: for
+  // `/api//evil.example/x` the remainder is `//evil.example/x`, which is a
+  // PROTOCOL-RELATIVE url, so new URL() keeps only the base's scheme and
+  // sends the request — with headers — to evil.example. Verified before this
+  // fix. Collapsing leading slashes removes that, and the origin is asserted
+  // afterwards so any future parsing surprise fails closed rather than
+  // silently forwarding somewhere else.
+  const base = new URL(env.BURN_SERVICE_ORIGIN);
+  const suffix = url.pathname.slice("/api".length).replace(/^\/+/, "/");
+  const target = new URL(base.origin);
+  target.pathname = suffix || "/";
+  target.search = url.search;
+  if (target.origin !== base.origin) {
+    return new Response(
+      JSON.stringify({ code: "BAD_GATEWAY", message: "refusing to proxy" }),
+      { status: 502, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  // Forward only what the service needs. Passing request.headers wholesale
+  // sends the visitor's cookies and this site's CF headers to a third-party
+  // origin; nothing downstream reads them, so they should not travel.
+  const headers = new Headers();
+  const contentType = request.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+  const accept = request.headers.get("accept");
+  if (accept) headers.set("accept", accept);
+
   const upstream = await fetch(target, {
     method: request.method,
-    headers: request.headers,
+    headers,
     body:
       request.method === "GET" || request.method === "HEAD"
         ? undefined
