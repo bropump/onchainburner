@@ -83,7 +83,7 @@ jobs:
     runs-on: ubuntu-24.04 # x86_64; toolchain asset names below assume it
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # platform-tools v1.53 is a ~1.3 GB install that cargo-build-sbf
       # downloads on first use; the agave release tarball is a few hundred
@@ -269,7 +269,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # check-production-wiring.sh uses ripgrep, which the hosted runner
       # image does not ship.
