@@ -52,6 +52,13 @@ const ALLOWED_METHODS = new Set([
 
 /** A single JSON-RPC request body is small; a batch of them is still small. */
 const MAX_BODY_BYTES = 256 * 1024;
+/**
+ * Bounds how much work one request can ask for. @solana/web3.js batches
+ * internally (its own limit is 100 per flush), so this must sit above normal
+ * app traffic; 100 matches the client and still stops a single request from
+ * queueing thousands of upstream calls.
+ */
+const MAX_BATCH_CALLS = 100;
 /** Upstream deadline. A slow getProgramAccounts is the worst case. */
 const UPSTREAM_TIMEOUT_MS = 30_000;
 
@@ -105,6 +112,14 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
 
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   if (!calls.length) return jsonRpcError(null, -32600, "empty batch");
+  if (calls.length > MAX_BATCH_CALLS) {
+    return jsonRpcError(
+      null,
+      -32600,
+      `batch of ${calls.length} exceeds ${MAX_BATCH_CALLS}`,
+      413
+    );
+  }
   for (const call of calls) {
     const reason = rejectReason(call);
     if (reason) {
@@ -112,6 +127,17 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       return jsonRpcError(id, -32601, reason);
     }
   }
+
+  // Forward the RE-SERIALIZED body, never the caller's raw bytes.
+  //
+  // With a duplicate key — {"method":"requestAirdrop","method":"getSlot"} —
+  // JSON.parse keeps the LAST value, so validation sees getSlot and passes.
+  // Forwarding the raw string would then hand the upstream a body whose first
+  // `method` is a blocked one, and any parser that keeps the FIRST occurrence
+  // executes it. Verified against this proxy before the fix: that exact body
+  // was accepted and forwarded. Re-serializing makes the upstream see exactly
+  // what was validated, so the two parsers cannot disagree.
+  const forwardBody = JSON.stringify(parsed);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
@@ -123,7 +149,7 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     const upstream = await fetch(env.SOLANA_RPC_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: raw,
+      body: forwardBody,
       signal: controller.signal,
       redirect: "manual",
     });
