@@ -19,7 +19,40 @@
 interface Env {
   /** Full upstream RPC URL including any key. Set with `wrangler secret put`. */
   SOLANA_RPC_URL?: string;
+  /**
+   * Origin of the quote service, e.g. https://burn-service.example. When set,
+   * `/api/*` is proxied there with the `/api` prefix stripped. When absent,
+   * `/api/*` returns a JSON 503 rather than falling through to the SPA.
+   */
+  BURN_SERVICE_ORIGIN?: string;
   ASSETS: { fetch: (request: Request) => Promise<Response> };
+  RPC_LIMITER?: { limit: (o: { key: string }) => Promise<{ success: boolean }> };
+  API_LIMITER?: { limit: (o: { key: string }) => Promise<{ success: boolean }> };
+}
+
+/** Client IP as Cloudflare sees it. Absent only outside the CF edge. */
+function clientKey(request: Request): string {
+  return request.headers.get("cf-connecting-ip") ?? "unknown";
+}
+
+/** Returns a 429 when over the limit, or null to proceed. */
+async function rateLimited(
+  limiter: Env["RPC_LIMITER"],
+  request: Request
+): Promise<Response | null> {
+  if (!limiter) return null;
+  const { success } = await limiter.limit({ key: clientKey(request) });
+  if (success) return null;
+  return new Response(
+    JSON.stringify({
+      code: "RATE_LIMITED",
+      message: "too many requests; slow down",
+    }),
+    {
+      status: 429,
+      headers: { "content-type": "application/json", "retry-after": "60" },
+    }
+  );
 }
 
 /**
@@ -61,6 +94,53 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_BATCH_CALLS = 100;
 /** Upstream deadline. A slow getProgramAccounts is the worst case. */
 const UPSTREAM_TIMEOUT_MS = 30_000;
+
+/**
+ * Same-origin gate for /rpc and /api.
+ *
+ * What this DOES stop: another website using these endpoints from a visitor's
+ * browser — someone embedding our paid RPC in their own app. That is the
+ * realistic abuse, because it scales with their traffic and costs us.
+ *
+ * What it does NOT stop, and cannot: a determined person with curl. Origin is
+ * a browser-supplied header, and a non-browser client sets it to anything.
+ * There is no secret a public frontend can hold that its users cannot read, so
+ * "only my frontend may call this" is not achievable in a browser app. Volume
+ * abuse is bounded by rate limiting, not by this check.
+ *
+ * Origin is REQUIRED on state-changing methods. Per the Fetch spec a browser
+ * always sends it on POST, regardless of same- or cross-origin, so requiring
+ * it costs this app nothing and blocks the casual `curl https://.../rpc` that
+ * sends no Origin at all. A forged header still passes — that is the limit of
+ * this control, not an oversight.
+ */
+function isAllowedOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    // GET/HEAD may legitimately omit it; POST may not.
+    return request.method === "GET" || request.method === "HEAD";
+  }
+  let host: string;
+  try {
+    host = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  const self = new URL(request.url).host;
+  if (host === self) return true;
+  // Local development against a deployed worker.
+  return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+}
+
+function forbidden(): Response {
+  return new Response(
+    JSON.stringify({
+      code: "FORBIDDEN_ORIGIN",
+      message: "this endpoint serves its own site only",
+    }),
+    { status: 403, headers: { "content-type": "application/json" } }
+  );
+}
 
 function jsonRpcError(id: unknown, code: number, message: string, status = 400) {
   return new Response(
@@ -180,10 +260,64 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
   }
 }
 
+/**
+ * `/api/*` is the quote service. It MUST NOT fall through to the SPA: the
+ * asset handler answers any unmatched path with index.html and a 200, so a
+ * missing service returned an HTML page that every layer read as success
+ * until something tried to use a field. Answer in JSON, with a status that
+ * means what it says.
+ */
+async function handleApi(request: Request, env: Env): Promise<Response> {
+  if (!env.BURN_SERVICE_ORIGIN) {
+    return new Response(
+      JSON.stringify({
+        code: "BURN_SERVICE_NOT_CONFIGURED",
+        message:
+          "the burn service is not configured on this deployment; set BURN_SERVICE_ORIGIN",
+      }),
+      { status: 503, headers: { "content-type": "application/json" } }
+    );
+  }
+  const url = new URL(request.url);
+  const target = new URL(
+    url.pathname.slice("/api".length) + url.search,
+    env.BURN_SERVICE_ORIGIN
+  );
+  const upstream = await fetch(target, {
+    method: request.method,
+    headers: request.headers,
+    body:
+      request.method === "GET" || request.method === "HEAD"
+        ? undefined
+        : request.body,
+    redirect: "manual",
+  });
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/rpc") return handleRpc(request, env);
+    const isEndpoint =
+      url.pathname === "/rpc" ||
+      url.pathname === "/api" ||
+      url.pathname.startsWith("/api/");
+    if (isEndpoint && !isAllowedOrigin(request)) return forbidden();
+    if (url.pathname === "/rpc") {
+      const limited = await rateLimited(env.RPC_LIMITER, request);
+      return limited ?? handleRpc(request, env);
+    }
+    if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
+      const limited = await rateLimited(env.API_LIMITER, request);
+      return limited ?? handleApi(request, env);
+    }
     return env.ASSETS.fetch(request);
   },
 };

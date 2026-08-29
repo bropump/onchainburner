@@ -12,5 +12,24 @@
   },
   "observability": {
     "enabled": true
-  }
+  },
+  // Per-IP rate limits. An origin check stops other WEBSITES using these
+  // endpoints; it cannot stop a script, because Origin is client-supplied.
+  // Volume abuse is bounded here instead.
+  //
+  // Limits are set above honest use, not near it: one launch-page load fans
+  // out into dozens of RPC calls (token metadata + reference discovery per
+  // preset), so a tight limit would break the app for real users first.
+  "ratelimits": [
+    {
+      "name": "RPC_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 600, "period": 60 }
+    },
+    {
+      "name": "API_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ]
 }
