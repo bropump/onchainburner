@@ -22,7 +22,12 @@ const INFO_CACHE_MAX = 1_024;
 
 export type TokenInfo =
   | { found: false }
-  | { found: true; symbol: string | null; name: string | null; image: string | null };
+  | {
+      found: true;
+      symbol: string | null;
+      name: string | null;
+      image: string | null;
+    };
 
 /**
  * The body is an ArrayBuffer rather than a Uint8Array: both are valid Worker
@@ -70,36 +75,48 @@ export function normalizeImageUrl(raw: string): string | null {
 }
 
 const infoCache = new Map<string, TokenInfo>();
+const infoInFlight = new Map<string, Promise<TokenInfo>>();
 
 export async function tokenInfo(mint: string): Promise<TokenInfo> {
   const hit = infoCache.get(mint);
   if (hit !== undefined) return hit;
-  let out: TokenInfo = { found: false };
-  try {
-    const res = await fetch(JUPITER_TOKEN_SEARCH + encodeURIComponent(mint), {
-      signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
-    });
-    if (res.ok) {
-      const body = (await res.json()) as unknown;
-      const first = Array.isArray(body) ? body[0] : body;
-      if (first && typeof first === "object") {
-        const t = first as { symbol?: string; name?: string; icon?: string };
-        if (t.symbol || t.name) {
-          out = {
-            found: true,
-            symbol: t.symbol ?? null,
-            name: t.name ?? null,
-            image: t.icon ? normalizeImageUrl(t.icon) : null,
-          };
+  const pending = infoInFlight.get(mint);
+  if (pending) return pending;
+  const work = (async () => {
+    let out: TokenInfo = { found: false };
+    let completed = false;
+    try {
+      const res = await fetch(JUPITER_TOKEN_SEARCH + encodeURIComponent(mint), {
+        signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        completed = true;
+        const body = (await res.json()) as unknown;
+        const first = Array.isArray(body) ? body[0] : body;
+        if (first && typeof first === "object") {
+          const t = first as { symbol?: string; name?: string; icon?: string };
+          if (t.symbol || t.name) {
+            out = {
+              found: true,
+              symbol: t.symbol ?? null,
+              name: t.name ?? null,
+              image: t.icon ? normalizeImageUrl(t.icon) : null,
+            };
+          }
         }
       }
+    } catch {
+      // An unnamed token is a cosmetic loss; never surface it as an error.
     }
-  } catch {
-    // An unnamed token is a cosmetic loss; never surface it as an error.
+    // Do not poison a warm Worker isolate after a transient Jupiter timeout.
+    return completed ? remember(infoCache, INFO_CACHE_MAX, mint, out) : out;
+  })();
+  infoInFlight.set(mint, work);
+  try {
+    return await work;
+  } finally {
+    infoInFlight.delete(mint);
   }
-  // A miss is cached too, so a token Jupiter does not know does not re-query
-  // on every render — but only briefly, since the isolate is short-lived.
-  return remember(infoCache, INFO_CACHE_MAX, mint, out);
 }
 
 /**
@@ -129,6 +146,7 @@ function fetchableIconUrl(raw: string): URL | null {
 }
 
 const imageCache = new Map<string, TokenImage | null>();
+const imageInFlight = new Map<string, Promise<TokenImage | null>>();
 
 /**
  * The icon bytes, fetched here rather than by the browser.
@@ -140,43 +158,56 @@ const imageCache = new Map<string, TokenImage | null>();
  * <img> is written. Re-serving them from here is the only approach that does
  * not depend on a third party's opinion of the caller.
  */
-export async function tokenImageBytes(mint: string): Promise<TokenImage | null> {
+export async function tokenImageBytes(
+  mint: string
+): Promise<TokenImage | null> {
   const hit = imageCache.get(mint);
   if (hit !== undefined) return hit;
-  let out: TokenImage | null = null;
-  try {
-    const info = await tokenInfo(mint);
-    let next = info.found ? info.image : null;
-    // Redirects are followed by hand so each new host is validated exactly
-    // like the first, rather than trusting the fetch stack to stay on a
-    // host this function already approved.
-    for (let hop = 0; hop < 3 && next; hop++) {
-      const url = fetchableIconUrl(next);
-      next = null;
-      if (!url) break;
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
-        redirect: "manual",
-      });
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
-        if (location) next = new URL(location, url).toString();
-        continue;
-      }
-      const type = res.headers.get("content-type") ?? "";
-      if (res.ok && type.startsWith("image/")) {
-        const bytes = await res.arrayBuffer();
-        if (bytes.byteLength > 0 && bytes.byteLength <= MAX_IMAGE_BYTES) {
-          // Only the media type is echoed back, never the upstream's own
-          // headers: those can carry cookies and cache directives we did not
-          // choose.
-          out = { body: bytes, type: type.split(";", 1)[0]!.trim() };
+  const pending = imageInFlight.get(mint);
+  if (pending) return pending;
+  const work = (async () => {
+    let out: TokenImage | null = null;
+    try {
+      const info = await tokenInfo(mint);
+      let next = info.found ? info.image : null;
+      // Redirects are followed by hand so each new host is validated exactly
+      // like the first, rather than trusting the fetch stack to stay on a
+      // host this function already approved.
+      for (let hop = 0; hop < 3 && next; hop++) {
+        const url = fetchableIconUrl(next);
+        next = null;
+        if (!url) break;
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+          redirect: "manual",
+        });
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers.get("location");
+          if (location) next = new URL(location, url).toString();
+          continue;
         }
+        const type = res.headers.get("content-type") ?? "";
+        if (res.ok && type.startsWith("image/")) {
+          const bytes = await res.arrayBuffer();
+          if (bytes.byteLength > 0 && bytes.byteLength <= MAX_IMAGE_BYTES) {
+            // Only the media type is echoed back, never the upstream's own
+            // headers: those can carry cookies and cache directives we did not
+            // choose.
+            out = { body: bytes, type: type.split(";", 1)[0]!.trim() };
+          }
+        }
+        break;
       }
-      break;
+    } catch {
+      // No icon is a fine outcome; never surface it.
     }
-  } catch {
-    // No icon is a fine outcome; never surface it.
+    // Cache immutable bytes, but leave a timeout or gateway failure retryable.
+    return out ? remember(imageCache, IMAGE_CACHE_MAX, mint, out) : null;
+  })();
+  imageInFlight.set(mint, work);
+  try {
+    return await work;
+  } finally {
+    imageInFlight.delete(mint);
   }
-  return remember(imageCache, IMAGE_CACHE_MAX, mint, out);
 }

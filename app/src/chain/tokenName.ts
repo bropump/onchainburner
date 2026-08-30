@@ -76,6 +76,7 @@ export function parseTokenName(data: Uint8Array): TokenName | undefined {
 }
 
 const cache = new Map<string, TokenName | null>();
+const nameInFlight = new Map<string, Promise<TokenName | undefined>>();
 
 /** Fetch and cache a mint's on-chain name. null means "looked, none there". */
 export async function fetchTokenName(
@@ -84,18 +85,32 @@ export async function fetchTokenName(
 ): Promise<TokenName | undefined> {
   const hit = cache.get(mint);
   if (hit !== undefined) return hit ?? undefined;
-  let parsed: TokenName | undefined;
+  const pending = nameInFlight.get(mint);
+  if (pending) return pending;
+  const work = (async () => {
+    let parsed: TokenName | undefined;
+    let completed = false;
+    try {
+      const info = await connection.getAccountInfo(new PublicKey(mint));
+      if (info) parsed = parseTokenName(info.data);
+      // Legacy SPL mints (82 bytes, Tokenkeg-owned) carry no TLV metadata — older
+      // Pump coins land here. Their name lives in a Metaplex metadata account.
+      if (!parsed) parsed = await fetchMetaplexName(connection, mint);
+      completed = true;
+    } catch {
+      // A cosmetic label is never worth surfacing an error for.
+    }
+    // A timeout is not evidence that metadata is absent. Keeping that miss in
+    // the page-wide cache made identities stay blank after RPC recovered.
+    if (parsed || completed) cache.set(mint, parsed ?? null);
+    return parsed;
+  })();
+  nameInFlight.set(mint, work);
   try {
-    const info = await connection.getAccountInfo(new PublicKey(mint));
-    if (info) parsed = parseTokenName(info.data);
-    // Legacy SPL mints (82 bytes, Tokenkeg-owned) carry no TLV metadata — older
-    // Pump coins land here. Their name lives in a Metaplex metadata account.
-    if (!parsed) parsed = await fetchMetaplexName(connection, mint);
-  } catch {
-    // A cosmetic label is never worth surfacing an error for.
+    return await work;
+  } finally {
+    nameInFlight.delete(mint);
   }
-  cache.set(mint, parsed ?? null);
-  return parsed;
 }
 
 /** Synchronous cache read, for labels rendered before the fetch resolves. */
@@ -117,10 +132,13 @@ export function useTokenNames(
     let cancelled = false;
     (async () => {
       const found = new Map<string, TokenName>();
-      for (const mint of mints) {
-        const n = await fetchTokenName(connection, mint);
-        if (n) found.set(mint, n);
-      }
+      const resolved = await Promise.all(
+        mints.map(
+          async (mint) =>
+            [mint, await fetchTokenName(connection, mint)] as const
+        )
+      );
+      for (const [mint, n] of resolved) if (n) found.set(mint, n);
       if (!cancelled && found.size) setNames(found);
     })();
     return () => {
@@ -159,7 +177,11 @@ async function fetchMetaplexName(
   const n = clean(name.value);
   const s = clean(symbol.value);
   if (!n && !s) return undefined;
-  return { name: n, symbol: s, uri: uriField ? clean(uriField.value) : undefined };
+  return {
+    name: n,
+    symbol: s,
+    uri: uriField ? clean(uriField.value) : undefined,
+  };
 }
 
 const imageCache = new Map<string, string | null>();
@@ -173,10 +195,13 @@ const imageCache = new Map<string, string | null>();
  * any failure yields no image rather than an error. Treat the result as
  * decoration, never as evidence about what a token is.
  */
-export async function fetchTokenImage(uri: string): Promise<string | undefined> {
+export async function fetchTokenImage(
+  uri: string
+): Promise<string | undefined> {
   const hit = imageCache.get(uri);
   if (hit !== undefined) return hit ?? undefined;
   let image: string | undefined;
+  let completed = false;
   try {
     const url = new URL(rewriteGateway(uri));
     if (url.protocol !== "https:") throw new Error("non-https metadata uri");
@@ -194,11 +219,12 @@ export async function fetchTokenImage(uri: string): Promise<string | undefined> 
         const img = new URL(rewriteGateway(json.image));
         if (img.protocol === "https:") image = img.toString();
       }
+      completed = true;
     }
   } catch {
     // No image is a fine outcome; never surface this.
   }
-  imageCache.set(uri, image ?? null);
+  if (image || completed) imageCache.set(uri, image ?? null);
   return image;
 }
 
@@ -273,7 +299,8 @@ export function useTokenPreview(
  * Only the HOST is swapped; the content hash is untouched, so this cannot
  * change which bytes are addressed.
  */
-const DEAD_OR_BARE_GATEWAYS = /^(?:ipfs:\/\/|https:\/\/(?:cf-ipfs\.com|cloudflare-ipfs\.com|ipfs\.infura\.io)\/ipfs\/)/;
+const DEAD_OR_BARE_GATEWAYS =
+  /^(?:ipfs:\/\/|https:\/\/(?:cf-ipfs\.com|cloudflare-ipfs\.com|ipfs\.infura\.io)\/ipfs\/)/;
 
 function rewriteGateway(uri: string): string {
   if (uri.startsWith("ipfs://")) {
@@ -288,38 +315,57 @@ function rewriteGateway(uri: string): string {
 
 type ServiceToken = { name: string; symbol: string; image?: string };
 const serviceCache = new Map<string, ServiceToken | null>();
+const serviceInFlight = new Map<string, Promise<ServiceToken | undefined>>();
 
 /** Ask our service (which proxies Jupiter) for a mint's name, ticker and image. */
-async function fetchServiceToken(mint: string): Promise<ServiceToken | undefined> {
+async function fetchServiceToken(
+  mint: string
+): Promise<ServiceToken | undefined> {
   const hit = serviceCache.get(mint);
   if (hit !== undefined) return hit ?? undefined;
-  let out: ServiceToken | undefined;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch(
-      `${BURN_SERVICE_URL}/token?mint=${encodeURIComponent(mint)}`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timer);
-    if (res.ok) {
-      const j = (await res.json()) as {
-        found?: boolean;
-        name?: string | null;
-        symbol?: string | null;
-        image?: string | null;
-      };
-      if (j.found && (j.symbol || j.name)) {
-        out = {
-          name: j.name ?? "",
-          symbol: j.symbol ?? "",
-          image: j.image ?? undefined,
+  const pending = serviceInFlight.get(mint);
+  if (pending) return pending;
+  const work = (async () => {
+    let out: ServiceToken | undefined;
+    let completed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const controller = new AbortController();
+      timer = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(
+        `${BURN_SERVICE_URL}/token?mint=${encodeURIComponent(mint)}`,
+        { signal: controller.signal }
+      );
+      if (res.ok) {
+        const j = (await res.json()) as {
+          found?: boolean;
+          name?: string | null;
+          symbol?: string | null;
+          image?: string | null;
         };
+        completed = true;
+        if (j.found && (j.symbol || j.name)) {
+          out = {
+            name: j.name ?? "",
+            symbol: j.symbol ?? "",
+            image: j.image ?? undefined,
+          };
+        }
       }
+    } catch {
+      // Service down or offline: fall through to on-chain metadata.
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-  } catch {
-    // Service down or offline: fall through to on-chain metadata.
+    // Cache a real `found: false`, but never cache a timeout/5xx as if the
+    // token had no metadata. Transient failures must recover inside the SPA.
+    if (out || completed) serviceCache.set(mint, out ?? null);
+    return out;
+  })();
+  serviceInFlight.set(mint, work);
+  try {
+    return await work;
+  } finally {
+    serviceInFlight.delete(mint);
   }
-  serviceCache.set(mint, out ?? null);
-  return out;
 }

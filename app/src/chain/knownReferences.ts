@@ -18,6 +18,38 @@ export type KnownReference = {
 };
 
 export const KNOWN_REFERENCES: Record<string, KnownReference> = {
+  EBmJhqzjyfd3SUrTjUu8Gzi8zMQWDXmyuDhg2a7cCjxW: {
+    symbol: "$COOK",
+    pool: "pump",
+    venue: "Pump curve",
+    pickedAt: "2026-08-30",
+    reason:
+      "the canonical Pump venue is derived from the mint and authenticated live; using the derived fast path avoids an unnecessary all-venue market scan",
+  },
+  "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump": {
+    symbol: "ANSEM",
+    pool: "pump",
+    venue: "PumpSwap",
+    pickedAt: "2026-08-30",
+    reason:
+      "the canonical protocol-owned PumpSwap pool is derived from the mint and authenticated live",
+  },
+  "9Pfync3ejPC9eHqVzq3nYQJAhyhjqpnB9UsaSfLxpump": {
+    symbol: "KET",
+    pool: "pump",
+    venue: "PumpSwap",
+    pickedAt: "2026-08-30",
+    reason:
+      "the canonical protocol-owned PumpSwap pool is derived from the mint and authenticated live",
+  },
+  GkyPYa7NnCFbduLknCfBfP7p8564X1VZhwZYJ6CZpump: {
+    symbol: "CHILLHOUSE",
+    pool: "pump",
+    venue: "PumpSwap",
+    pickedAt: "2026-08-30",
+    reason:
+      "the canonical protocol-owned PumpSwap pool is derived from the mint and authenticated live",
+  },
   "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump": {
     symbol: "PNUT",
     pool: "4AZRPNEfCJ7iw28rJu5aUyeQhYcvdcNm8cswyL51AY9i",

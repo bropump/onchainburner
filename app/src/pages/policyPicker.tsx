@@ -1,11 +1,7 @@
 import { useMemo, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { KNOWN_TOKENS, knownSymbol } from "../chain/constants";
-import {
-  buildPolicyLegs,
-  PolicyResult,
-  VaultPolicy,
-} from "../chain/policy";
+import { buildPolicyLegs, PolicyResult, VaultPolicy } from "../chain/policy";
 import { useTokenPreview } from "../chain/tokenName";
 import { useApp } from "../state/AppContext";
 import { shortAddress } from "../ui";
@@ -53,11 +49,7 @@ function TokenAvatar({
   return (
     <span className={`token-avatar${large ? " large" : ""}`} aria-hidden="true">
       {showLogo ? (
-        <img
-          src={image}
-          alt=""
-          onError={() => setFailedSrc(image)}
-        />
+        <img src={image} alt="" onError={() => setFailedSrc(image)} />
       ) : (
         initials(label)
       )}
@@ -177,14 +169,14 @@ export function PolicyPicker({
 
       {!creatorMint ? null : !ownSelected && !parsedMint ? (
         <p className="picker-state err">Not a valid mint address.</p>
-      ) : !ownSelected && preview.loading ? (
+      ) : deferSummary ? null : !ownSelected && preview.loading ? (
         <div className="token-card state">Looking up token…</div>
       ) : !ownSelected && !preview.token ? (
         <div className="token-card state err">
           <span>Token not found</span>
           <code>{shortAddress(creatorMint, 6)}</code>
         </div>
-      ) : deferSummary ? null : (
+      ) : (
         <div className="token-card">
           <TokenAvatar
             label={selectedSymbol || selectedName}
@@ -193,7 +185,9 @@ export function PolicyPicker({
           />
           <span className="token-card-copy">
             <strong>{selectedName || selectedSymbol}</strong>
-            {selectedSymbol && <span className="token-ticker">{selectedSymbol}</span>}
+            {selectedSymbol && (
+              <span className="token-ticker">{selectedSymbol}</span>
+            )}
             <code title={creatorMint}>{shortAddress(creatorMint, 7)}</code>
           </span>
         </div>
