@@ -314,6 +314,12 @@ function rewriteGateway(uri: string): string {
 }
 
 type ServiceToken = { name: string; symbol: string; image?: string };
+export type TokenSearchResult = {
+  mint: string;
+  name: string;
+  symbol: string;
+  image?: string;
+};
 const serviceCache = new Map<string, ServiceToken | null>();
 const serviceInFlight = new Map<string, Promise<ServiceToken | undefined>>();
 
@@ -367,5 +373,55 @@ async function fetchServiceToken(
     return await work;
   } finally {
     serviceInFlight.delete(mint);
+  }
+}
+
+/** Search the service's curated token index by name, ticker, or mint. */
+export async function searchServiceTokens(
+  query: string,
+  signal?: AbortSignal
+): Promise<TokenSearchResult[]> {
+  const normalized = query.trim().replace(/\s+/g, " ");
+  if (normalized.length < 2 || normalized.length > 64) return [];
+  try {
+    const res = await fetch(
+      `${BURN_SERVICE_URL}/token/search?query=${encodeURIComponent(
+        normalized
+      )}`,
+      { signal }
+    );
+    if (!res.ok) return [];
+    const body = (await res.json()) as {
+      results?: Array<{
+        mint?: unknown;
+        name?: unknown;
+        symbol?: unknown;
+        image?: unknown;
+      }>;
+    };
+    if (!Array.isArray(body.results)) return [];
+    return body.results.flatMap((row) => {
+      if (
+        typeof row.mint !== "string" ||
+        (typeof row.name !== "string" && typeof row.symbol !== "string")
+      ) {
+        return [];
+      }
+      return [
+        {
+          mint: row.mint,
+          name: typeof row.name === "string" ? row.name : "",
+          symbol: typeof row.symbol === "string" ? row.symbol : "",
+          image:
+            typeof row.image === "string"
+              ? `${BURN_SERVICE_URL}/token/image?mint=${encodeURIComponent(
+                  row.mint
+                )}`
+              : undefined,
+        },
+      ];
+    });
+  } catch {
+    return [];
   }
 }

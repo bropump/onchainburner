@@ -273,12 +273,25 @@ describe("quote-service Worker transport", () => {
     const handler = createBurnFetchHandler({
       execute: async () => ({ status: "unused" } as never),
     });
-    // /token and /token/image ARE implemented: the launch picker calls both
-    // on every render, and without them every burn target renders unnamed and
-    // iconless. The demo-only routes stay absent.
+    // /token, /token/search and /token/image ARE implemented: the launch
+    // picker uses them to discover and render burn targets. The demo-only
+    // routes stay absent.
     for (const path of ["/demo/curve", "/demo/trade"]) {
       const response = await handler(new Request(`https://internal${path}`));
       expect(response.status, path).to.equal(404);
+    }
+  });
+
+  it("bounds token search before calling the public token index", async () => {
+    const handler = createBurnFetchHandler({
+      execute: async () => ({ status: "unused" } as never),
+    });
+    for (const query of ["", "x", "x".repeat(65), "%00bad"]) {
+      const response = await handler(
+        new Request(`https://internal/token/search?query=${query}`)
+      );
+      expect(response.status).to.equal(200);
+      expect(await response.json()).to.deep.equal({ results: [] });
     }
   });
 });

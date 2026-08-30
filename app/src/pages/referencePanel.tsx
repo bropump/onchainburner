@@ -19,7 +19,7 @@ import {
   WITHDRAWABLE_ALLOWED,
 } from "../chain/constants";
 import { useTokenNames, useTokenPreview } from "../chain/tokenName";
-import type { PolicyFixedLeg } from "../chain/policy";
+import { isPlatformFeeLeg, type PolicyFixedLeg } from "../chain/policy";
 import { KNOWN_REFERENCES } from "../chain/knownReferences";
 import {
   fetchCandidate,
@@ -543,8 +543,8 @@ export function ReferencePanel({
           </div>
           {mergedFixedLeg && (
             <div className="reference-primary-merged">
-              {primaryLeg.bps / 100}% submitted as one binding · includes the
-              fixed {mergedFixedLeg.symbol} {mergedFixedLeg.bps / 100}% leg
+              {primaryLeg.bps / 100}% submitted as one binding · includes the{" "}
+              {mergedFixedLeg.bps / 100}% platform fee allocation
             </div>
           )}
           <div className="reference-primary-facts">
@@ -559,11 +559,11 @@ export function ReferencePanel({
 
         <section
           className="reference-fixed"
-          aria-label="Fixed platform fee legs"
+          aria-label="Platform fees"
         >
           <div className="reference-fixed-head">
-            <strong>Fixed platform fee legs</strong>
-            <span>10% each</span>
+            <strong>Platform fees</strong>
+            <span>{(hierarchy.fixedLegs[0]?.bps ?? 0) / 100}%</span>
           </div>
           <div className="reference-fixed-list">
             {hierarchy.fixedLegs.map((fixed) => {
@@ -586,7 +586,7 @@ export function ReferencePanel({
                 return (
                   <div className="reference-fixed-merged" key={fixed.mint}>
                     <div className="reference-fixed-token">
-                      <strong>{fixed.symbol}</strong>
+                      <strong>Platform fees</strong>
                       <span className="mono">{fixed.bps / 100}%</span>
                     </div>
                     <span>Included in the {leg.bps / 100}% binding above</span>
@@ -613,7 +613,7 @@ export function ReferencePanel({
               return (
                 <div className="reference-fixed-merged" key={fixed.mint}>
                   <div className="reference-fixed-token">
-                    <strong>{fixed.symbol}</strong>
+                    <strong>Platform fees</strong>
                     <span className="mono">{fixed.bps / 100}%</span>
                   </div>
                   <span className="mono dim">
@@ -650,7 +650,9 @@ export function ReferencePanel({
           <div className="reference-row" key={leg.mint}>
             <div className="reference-token">
               <strong>
-                {labels[leg.mint] || legLabel(leg.mint, tokenNames)}
+                {isPlatformFeeLeg(leg.mint, leg.bps)
+                  ? "Platform fees"
+                  : labels[leg.mint] || legLabel(leg.mint, tokenNames)}
               </strong>
               <span className="mono">{leg.bps / 100}%</span>
             </div>

@@ -40,7 +40,7 @@ export function ExistingPage() {
   const { connection, wallet, saveVault, setVaultLookupTable } = useApp();
   const navigate = useNavigate();
   const [launchMint, setLaunchMint] = useState("");
-  // Policy: creator-selected target 90%, NEIRO fixed at 10%.
+  // Policy: creator-selected target 90%, fixed platform allocation 10%.
   const [vaultPolicy, setVaultPolicy] = useState<VaultPolicy>(DEFAULT_POLICY);
   //
   // The 90% pick defaults to the namespace token itself: burn the token whose

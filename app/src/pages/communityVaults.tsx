@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { KNOWN_TOKENS } from "../chain/constants";
 import { useTokenPreview } from "../chain/tokenName";
+import { type IndexedVaultConfig, vaultHref } from "../chain/vaultLink";
 import { useApp } from "../state/AppContext";
 import { CopyButton, shortAddress } from "../ui";
 
@@ -23,6 +24,7 @@ type Launch = Readonly<{
   vaultCount: number;
   targetCount: number;
   lastBurnAt: number | null;
+  config: IndexedVaultConfig | null;
 }>;
 
 type Leaderboard = Readonly<{
@@ -80,7 +82,15 @@ function timeLabel(timestamp: number | null): string {
   });
 }
 
-function TokenIdentity({ mint, appHref }: { mint: string; appHref?: string }) {
+function TokenIdentity({
+  mint,
+  appHref,
+  vaultConfig,
+}: {
+  mint: string;
+  appHref?: string;
+  vaultConfig?: IndexedVaultConfig | null;
+}) {
   const { connection } = useApp();
   const preset = known.get(mint);
   const preview = useTokenPreview(connection, mint);
@@ -91,6 +101,8 @@ function TokenIdentity({ mint, appHref }: { mint: string; appHref?: string }) {
 
   const symbol = preset?.symbol ?? preview.token?.symbol ?? null;
   const name = preview.token?.name ?? null;
+  const internalHref =
+    appHref ?? vaultHref(vaultConfig, symbol ?? name ?? undefined);
   const identity = (
     <>
       <span className="community-avatar" aria-hidden="true">
@@ -111,8 +123,8 @@ function TokenIdentity({ mint, appHref }: { mint: string; appHref?: string }) {
       </span>
     </>
   );
-  return appHref ? (
-    <a className="community-token community-token-link" href={appHref}>
+  return internalHref ? (
+    <a className="community-token community-token-link" href={internalHref}>
       {identity}
     </a>
   ) : (
@@ -295,7 +307,7 @@ export function CommunityVaultsPage() {
                         <td>
                           <TokenIdentity
                             mint={row.mint}
-                            appHref={`/community/launch/${encodeURIComponent(row.mint)}`}
+                            vaultConfig={row.config}
                           />
                         </td>
                         <td className="num">{formatSol(row.solLamports)}</td>
@@ -338,6 +350,7 @@ type LaunchDetail = Readonly<{
     burnCount: number;
     targetCount: number;
     lastBurnAt: number | null;
+    config: IndexedVaultConfig | null;
   }[];
 }>;
 
@@ -357,6 +370,7 @@ type VaultDetail = Readonly<{
     burnCount: number;
     lastBurnAt: number | null;
   }[];
+  config: IndexedVaultConfig | null;
 }>;
 
 function DetailLoading() {
@@ -386,6 +400,18 @@ export function CommunityLaunchPage({ mint }: { mint: string }) {
     return () => controller.abort();
   }, [mint]);
 
+  const destination = useMemo(
+    () =>
+      vaultHref(
+        data?.vaults[0]?.config,
+        known.get(mint)?.symbol
+      ),
+    [data, mint]
+  );
+  useEffect(() => {
+    if (destination) window.location.replace(destination);
+  }, [destination]);
+
   return (
     <div className="community-page">
       <a className="community-back" href="/community">← Community vaults</a>
@@ -393,7 +419,7 @@ export function CommunityLaunchPage({ mint }: { mint: string }) {
         <span className="eyebrow">LAUNCH</span>
         <TokenIdentity mint={mint} />
       </div>
-      {error ? <DetailError /> : !data ? <DetailLoading /> : (
+      {error ? <DetailError /> : !data || destination ? <DetailLoading /> : (
         <>
           <div className="community-stats">
             <div className="community-stat"><span>SOL burned</span><strong>{formatSol(data.totals.solLamports)}</strong></div>
@@ -410,7 +436,13 @@ export function CommunityLaunchPage({ mint }: { mint: string }) {
                   {data.vaults.map((row) => (
                     <tr key={row.vault}>
                       <td>
-                        <a className="community-vault-link" href={`/community/vault/${encodeURIComponent(row.vault)}`}>
+                        <a
+                          className="community-vault-link"
+                          href={
+                            vaultHref(row.config, known.get(mint)?.symbol) ??
+                            `/community/vault/${encodeURIComponent(row.vault)}`
+                          }
+                        >
                           <span className="community-avatar">V</span>
                           <span><strong>Open vault</strong><small>{shortAddress(row.vault, 6)}</small></span>
                         </a>
@@ -450,6 +482,18 @@ export function CommunityVaultDetailPage({ vault }: { vault: string }) {
     return () => controller.abort();
   }, [vault]);
 
+  const destination = useMemo(
+    () =>
+      vaultHref(
+        data?.config,
+        data?.config ? known.get(data.config.launchMint)?.symbol : undefined
+      ),
+    [data]
+  );
+  useEffect(() => {
+    if (destination) window.location.replace(destination);
+  }, [destination]);
+
   return (
     <div className="community-page">
       <a className="community-back" href="/community">← Community vaults</a>
@@ -457,12 +501,12 @@ export function CommunityVaultDetailPage({ vault }: { vault: string }) {
         <span className="eyebrow">VAULT</span>
         <div className="community-vault-address"><code>{vault}</code><CopyButton value={vault} /></div>
       </div>
-      {error ? <DetailError /> : !data ? <DetailLoading /> : (
+      {error ? <DetailError /> : !data || destination ? <DetailLoading /> : (
         <>
           {data.launchMints.map((launch) => (
             <div className="community-detail-launch" key={launch}>
               <span>Funded by</span>
-              <TokenIdentity mint={launch} appHref={`/community/launch/${encodeURIComponent(launch)}`} />
+              <TokenIdentity mint={launch} vaultConfig={data.config} />
             </div>
           ))}
           <div className="community-stats community-stats-three">

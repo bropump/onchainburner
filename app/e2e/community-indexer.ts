@@ -93,13 +93,26 @@ assert.equal(rows.length, 2);
 assert.deepEqual(
   rows.map((row) => ({
     mint: row.targetMint,
+    reference: row.referencePool,
     bps: row.bps,
     sol: row.solLamports,
     burned: row.burnedAtoms,
   })),
   [
-    { mint: keys[8], bps: 9_000, sol: "90", burned: "100" },
-    { mint: keys[15], bps: 1_000, sol: "11", burned: "50" },
+    {
+      mint: keys[8],
+      reference: keys[11],
+      bps: 9_000,
+      sol: "90",
+      burned: "100",
+    },
+    {
+      mint: keys[15],
+      reference: keys[18],
+      bps: 1_000,
+      sol: "11",
+      burned: "50",
+    },
   ]
 );
 
@@ -113,8 +126,12 @@ const summary = aggregateVaultBurnRows([
   {
     signature: "sig-a",
     instruction_index: 1,
+    leg_index: 0,
+    slot: 1,
     launch_mint: keys[4],
     target_mint: keys[8],
+    reference_pool: keys[11],
+    bps: 9_000,
     sol_lamports: "9000000000000000000",
     burned_atoms: "18446744073709551616",
     block_time: 10,
@@ -122,8 +139,12 @@ const summary = aggregateVaultBurnRows([
   {
     signature: "sig-a",
     instruction_index: 1,
+    leg_index: 1,
+    slot: 1,
     launch_mint: keys[4],
     target_mint: keys[15],
+    reference_pool: keys[18],
+    bps: 1_000,
     sol_lamports: "1000000000000000000",
     burned_atoms: "50",
     block_time: 10,
@@ -131,8 +152,12 @@ const summary = aggregateVaultBurnRows([
   {
     signature: "sig-b",
     instruction_index: 0,
+    leg_index: 0,
+    slot: 2,
     launch_mint: keys[4],
     target_mint: keys[8],
+    reference_pool: keys[11],
+    bps: 10_000,
     sol_lamports: "7",
     burned_atoms: "9",
     block_time: 11,

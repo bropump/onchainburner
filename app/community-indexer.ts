@@ -59,6 +59,7 @@ export type IndexedBurnLeg = Readonly<{
   launchMint: string;
   vault: string;
   targetMint: string;
+  referencePool: string;
   bps: number;
   solLamports: string;
   burnedAtoms: string;
@@ -249,9 +250,16 @@ export function decodeBurnTransaction(
     let valid = true;
     for (let legIndex = 0; legIndex < split.weights.length; legIndex += 1) {
       const targetMint = accountKeys[instruction.accounts[8 + legIndex * 7]];
+      const referencePool =
+        accountKeys[instruction.accounts[11 + legIndex * 7]];
       const loggedInput = logs[legIndex * 2];
       const burnedAtoms = logs[legIndex * 2 + 1];
-      if (!targetMint || loggedInput !== amounts[legIndex] || burnedAtoms <= 0n) {
+      if (
+        !targetMint ||
+        !referencePool ||
+        loggedInput !== amounts[legIndex] ||
+        burnedAtoms <= 0n
+      ) {
         valid = false;
         break;
       }
@@ -264,6 +272,7 @@ export function decodeBurnTransaction(
         launchMint,
         vault,
         targetMint,
+        referencePool,
         bps: split.weights[legIndex],
         solLamports: amounts[legIndex].toString(),
         burnedAtoms: burnedAtoms.toString(),
@@ -474,8 +483,9 @@ async function storeRows(
         env.COMMUNITY_DB.prepare(
           `INSERT OR IGNORE INTO burn_legs
            (signature, instruction_index, leg_index, slot, block_time,
-            launch_mint, vault, target_mint, bps, sol_lamports, burned_atoms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            launch_mint, vault, target_mint, reference_pool, bps,
+            sol_lamports, burned_atoms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).bind(
           row.signature,
           row.instructionIndex,
@@ -485,6 +495,7 @@ async function storeRows(
           row.launchMint,
           row.vault,
           row.targetMint,
+          row.referencePool,
           row.bps,
           row.solLamports,
           row.burnedAtoms
@@ -595,8 +606,12 @@ type LaunchSqlRow = Readonly<{
 type VaultBurnSqlRow = Readonly<{
   signature: string;
   instruction_index: number;
+  leg_index: number;
+  slot: number;
   launch_mint: string;
   target_mint: string;
+  reference_pool: string;
+  bps: number;
   sol_lamports: string;
   burned_atoms: string;
   block_time: number | null;
@@ -605,11 +620,85 @@ type VaultBurnSqlRow = Readonly<{
 type LaunchBurnSqlRow = Readonly<{
   signature: string;
   instruction_index: number;
+  leg_index: number;
+  slot: number;
   vault: string;
   target_mint: string;
+  reference_pool: string;
+  bps: number;
   sol_lamports: string;
   block_time: number | null;
 }>;
+
+type VaultConfigLeg = Readonly<{
+  mint: string;
+  bps: number;
+  referencePool: string;
+}>;
+
+type VaultConfigRow = Readonly<{
+  launch_mint: string;
+  vault: string;
+  signature: string;
+  instruction_index: number;
+  leg_index: number;
+  slot: number;
+  target_mint: string;
+  reference_pool: string;
+  bps: number;
+}>;
+
+function latestVaultConfigs(rows: readonly VaultConfigRow[]) {
+  const latestCalls = new Map<
+    string,
+    { call: string; slot: number; instructionIndex: number; signature: string }
+  >();
+  for (const row of rows) {
+    const key = `${row.launch_mint}:${row.vault}`;
+    const current = latestCalls.get(key);
+    if (
+      !current ||
+      row.slot > current.slot ||
+      (row.slot === current.slot &&
+        (row.instruction_index > current.instructionIndex ||
+          (row.instruction_index === current.instructionIndex &&
+            row.signature > current.signature)))
+    ) {
+      latestCalls.set(key, {
+        call: `${row.signature}:${row.instruction_index}`,
+        slot: row.slot,
+        instructionIndex: row.instruction_index,
+        signature: row.signature,
+      });
+    }
+  }
+
+  const configs = new Map<
+    string,
+    { launchMint: string; vault: string; legs: VaultConfigLeg[] }
+  >();
+  for (const row of rows) {
+    const key = `${row.launch_mint}:${row.vault}`;
+    if (
+      latestCalls.get(key)?.call !==
+      `${row.signature}:${row.instruction_index}`
+    ) {
+      continue;
+    }
+    const config = configs.get(key) ?? {
+      launchMint: row.launch_mint,
+      vault: row.vault,
+      legs: [],
+    };
+    config.legs[row.leg_index] = {
+      mint: row.target_mint,
+      bps: row.bps,
+      referencePool: row.reference_pool,
+    };
+    configs.set(key, config);
+  }
+  return configs;
+}
 
 function validPubkey(value: string): boolean {
   try {
@@ -694,8 +783,9 @@ export async function communityVaultSummary(
   let offset = 0;
   while (true) {
     const page = await env.COMMUNITY_DB.prepare(
-      `SELECT signature, instruction_index, launch_mint, target_mint,
-              sol_lamports, burned_atoms, block_time
+      `SELECT signature, instruction_index, leg_index, slot, launch_mint,
+              target_mint, reference_pool, bps, sol_lamports, burned_atoms,
+              block_time
        FROM burn_legs
        WHERE vault = ?
        ORDER BY slot ASC, instruction_index ASC, leg_index ASC
@@ -708,6 +798,7 @@ export async function communityVaultSummary(
     offset += page.results.length;
   }
   const summary = aggregateVaultBurnRows(rows);
+  const config = [...latestVaultConfigs(rows.map((row) => ({ ...row, vault }))).values()][0];
   const indexState = await state(env);
   return Response.json(
     {
@@ -721,6 +812,7 @@ export async function communityVaultSummary(
         lastBurnAt: summary.lastBurnAt,
       },
       launchMints: summary.launchMints,
+      config: config ?? null,
       targets: summary.targets,
       index: {
         updatedAt: Number(indexState.last_indexed_at ?? 0),
@@ -748,8 +840,8 @@ export async function communityLaunchSummary(
   let offset = 0;
   while (true) {
     const page = await env.COMMUNITY_DB.prepare(
-      `SELECT signature, instruction_index, vault, target_mint,
-              sol_lamports, block_time
+      `SELECT signature, instruction_index, leg_index, slot, vault,
+              target_mint, reference_pool, bps, sol_lamports, block_time
        FROM burn_legs
        WHERE launch_mint = ?
        ORDER BY slot ASC, instruction_index ASC, leg_index ASC
@@ -761,6 +853,10 @@ export async function communityLaunchSummary(
     if (page.results.length < 1000) break;
     offset += page.results.length;
   }
+
+  const configs = latestVaultConfigs(
+    rows.map((row) => ({ ...row, launch_mint: launchMint }))
+  );
 
   const calls = new Set<string>();
   const vaults = new Map<
@@ -819,6 +915,7 @@ export async function communityLaunchSummary(
           burnCount: value.calls.size,
           targetCount: value.targets.size,
           lastBurnAt: value.lastBurnAt,
+          config: configs.get(`${launchMint}:${vault}`) ?? null,
         }))
         .sort((left, right) => {
           const l = BigInt(left.solLamports);
@@ -859,7 +956,7 @@ async function exactBurnedAtoms(
 }
 
 export async function communityLeaderboard(env: CommunityEnv): Promise<Response> {
-  const [communitiesResult, launchesResult, indexState] = await Promise.all([
+  const [communitiesResult, launchesResult, primaryVaultConfigs, indexState] = await Promise.all([
     env.COMMUNITY_DB.prepare(
       `SELECT b.target_mint,
               CAST(SUM(CAST(b.sol_lamports AS INTEGER)) AS TEXT) AS sol_lamports,
@@ -887,8 +984,48 @@ export async function communityLeaderboard(env: CommunityEnv): Promise<Response>
        ORDER BY SUM(CAST(sol_lamports AS INTEGER)) DESC, launch_mint ASC
        LIMIT 100`
     ).all<LaunchSqlRow>(),
+    env.COMMUNITY_DB.prepare(
+      `WITH vault_totals AS (
+         SELECT launch_mint, vault,
+                SUM(CAST(sol_lamports AS INTEGER)) AS total_sol
+         FROM burn_legs
+         GROUP BY launch_mint, vault
+       ), ranked_vaults AS (
+         SELECT launch_mint, vault,
+                ROW_NUMBER() OVER (
+                  PARTITION BY launch_mint
+                  ORDER BY total_sol DESC, vault ASC
+                ) AS vault_rank
+         FROM vault_totals
+       ), latest_calls AS (
+         SELECT b.launch_mint, b.vault, b.signature, b.instruction_index,
+                b.slot,
+                ROW_NUMBER() OVER (
+                  PARTITION BY b.launch_mint, b.vault
+                  ORDER BY b.slot DESC, b.instruction_index DESC,
+                           b.signature DESC
+                ) AS call_rank
+         FROM burn_legs b
+         INNER JOIN ranked_vaults v
+           ON v.launch_mint = b.launch_mint AND v.vault = b.vault
+         WHERE v.vault_rank = 1
+         GROUP BY b.launch_mint, b.vault, b.signature,
+                  b.instruction_index, b.slot
+       )
+       SELECT b.launch_mint, b.vault, b.signature, b.instruction_index,
+              b.leg_index, b.slot, b.target_mint, b.reference_pool, b.bps
+       FROM burn_legs b
+       INNER JOIN latest_calls c
+         ON c.launch_mint = b.launch_mint
+        AND c.vault = b.vault
+        AND c.signature = b.signature
+        AND c.instruction_index = b.instruction_index
+       WHERE c.call_rank = 1
+       ORDER BY b.launch_mint ASC, b.leg_index ASC`
+    ).all<VaultConfigRow>(),
     state(env),
   ]);
+  const configs = latestVaultConfigs(primaryVaultConfigs.results);
   const communities = await Promise.all(
     communitiesResult.results.map(async (row) => ({
       mint: row.target_mint,
@@ -932,6 +1069,10 @@ export async function communityLeaderboard(env: CommunityEnv): Promise<Response>
         vaultCount: row.vault_count,
         targetCount: row.target_count,
         lastBurnAt: row.last_burn_at,
+        config:
+          [...configs.values()].find(
+            (config) => config.launchMint === row.launch_mint
+          ) ?? null,
       })),
       index: {
         updatedAt: Number(indexState.last_indexed_at ?? 0),

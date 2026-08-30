@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CheckResult } from "./chain/admission";
 import { knownSymbol } from "./chain/constants";
+import { isPlatformFeeLeg } from "./chain/policy";
 import { cachedTokenName, type TokenName } from "./chain/tokenName";
 
 export type TokenNameMap = ReadonlyMap<string, TokenName>;
@@ -136,6 +137,8 @@ const SEGMENT_CLASSES = ["w0", "w1", "w2", "w3"];
 export function WeightBar({ legs }: { legs: { mint: string; bps: number }[] }) {
   const total = legs.reduce((sum, leg) => sum + Math.max(0, leg.bps || 0), 0);
   const overflow = total > 10_000;
+  const displayLabel = (leg: { mint: string; bps: number }) =>
+    isPlatformFeeLeg(leg.mint, leg.bps) ? "Platform fees" : legLabel(leg.mint);
   return (
     <div>
       <div className="weightbar" role="img" aria-label="weight allocation">
@@ -144,7 +147,7 @@ export function WeightBar({ legs }: { legs: { mint: string; bps: number }[] }) {
             key={i}
             className={`seg ${SEGMENT_CLASSES[i % 4]}`}
             style={{ width: `${Math.min(100, (Math.max(0, leg.bps || 0) / 100))}%` }}
-            title={`${legLabel(leg.mint)} ${leg.bps / 100}%`}
+            title={`${displayLabel(leg)} ${leg.bps / 100}%`}
           />
         ))}
         {total < 10_000 && (
@@ -155,7 +158,7 @@ export function WeightBar({ legs }: { legs: { mint: string; bps: number }[] }) {
         {legs.map((leg, i) => (
           <span key={i}>
             <span className={`swatch`} style={{ background: `var(--seg-${i}, ${["#c2571f", "#3f6f8f", "#6f8f4a", "#8f6f9f"][i % 4]})` }} />
-            {legLabel(leg.mint)} <span className="mono">{leg.bps ? (leg.bps / 100).toFixed(2) : "0"}%</span>
+            {displayLabel(leg)} <span className="mono">{leg.bps ? (leg.bps / 100).toFixed(2) : "0"}%</span>
           </span>
         ))}
         <span className="mono" style={{ marginLeft: "auto", color: overflow ? "var(--err)" : total === 10_000 ? "var(--ok)" : "var(--warn)" }}>

@@ -29,6 +29,13 @@ export type TokenInfo =
       image: string | null;
     };
 
+export type TokenSearchResult = {
+  mint: string;
+  symbol: string;
+  name: string;
+  image: string | null;
+};
+
 /**
  * The body is an ArrayBuffer rather than a Uint8Array: both are valid Worker
  * response bodies, but only ArrayBuffer is a `BodyInit` under the Node lib
@@ -76,6 +83,100 @@ export function normalizeImageUrl(raw: string): string | null {
 
 const infoCache = new Map<string, TokenInfo>();
 const infoInFlight = new Map<string, Promise<TokenInfo>>();
+
+const searchCache = new Map<string, readonly TokenSearchResult[]>();
+const searchInFlight = new Map<string, Promise<readonly TokenSearchResult[]>>();
+
+/**
+ * Keep public search deliberately small and predictable. The query is only
+ * ever appended with encodeURIComponent, but bounding it here also prevents a
+ * public UI endpoint from becoming an unbounded Jupiter request generator.
+ */
+export function normalizeTokenSearchQuery(raw: string | null): string | null {
+  if (typeof raw !== "string") return null;
+  const query = raw.trim().replace(/\s+/g, " ");
+  if (query.length < 2 || query.length > 64) return null;
+  if (/[\u0000-\u001f\u007f]/.test(query)) return null;
+  return query;
+}
+
+/** Search Jupiter's curated token index by name, ticker, or mint. */
+export async function tokenSearch(
+  rawQuery: string
+): Promise<readonly TokenSearchResult[]> {
+  const query = normalizeTokenSearchQuery(rawQuery);
+  if (!query) return [];
+  const cacheKey = query.toLocaleLowerCase("en-US");
+  const hit = searchCache.get(cacheKey);
+  if (hit !== undefined) return hit;
+  const pending = searchInFlight.get(cacheKey);
+  if (pending) return pending;
+
+  const work = (async () => {
+    let out: readonly TokenSearchResult[] = [];
+    let completed = false;
+    try {
+      const res = await fetch(
+        JUPITER_TOKEN_SEARCH + encodeURIComponent(query),
+        {
+          signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+        }
+      );
+      if (res.ok) {
+        completed = true;
+        const body = (await res.json()) as unknown;
+        const rows = Array.isArray(body) ? body : body ? [body] : [];
+        const seen = new Set<string>();
+        const sanitized: TokenSearchResult[] = [];
+        for (const row of rows) {
+          if (!row || typeof row !== "object") continue;
+          const token = row as {
+            id?: unknown;
+            mint?: unknown;
+            address?: unknown;
+            symbol?: unknown;
+            name?: unknown;
+            icon?: unknown;
+          };
+          const mint = [token.id, token.mint, token.address].find(
+            (value): value is string =>
+              typeof value === "string" && isPlausibleMint(value)
+          );
+          if (!mint || seen.has(mint)) continue;
+          const symbol =
+            typeof token.symbol === "string" ? token.symbol.slice(0, 32) : "";
+          const name =
+            typeof token.name === "string" ? token.name.slice(0, 96) : "";
+          if (!symbol && !name) continue;
+          seen.add(mint);
+          sanitized.push({
+            mint,
+            symbol,
+            name,
+            image:
+              typeof token.icon === "string"
+                ? normalizeImageUrl(token.icon)
+                : null,
+          });
+          if (sanitized.length === 6) break;
+        }
+        out = sanitized;
+      }
+    } catch {
+      // Search is discovery-only. A transient upstream failure is rendered as
+      // an empty result and is deliberately not cached.
+    }
+    return completed
+      ? remember(searchCache, INFO_CACHE_MAX, cacheKey, out)
+      : out;
+  })();
+  searchInFlight.set(cacheKey, work);
+  try {
+    return await work;
+  } finally {
+    searchInFlight.delete(cacheKey);
+  }
+}
 
 export async function tokenInfo(mint: string): Promise<TokenInfo> {
   const hit = infoCache.get(mint);

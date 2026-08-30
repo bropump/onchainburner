@@ -23,7 +23,13 @@ import {
   policyErrorStatus,
   sanitizeForTransport,
 } from "./server";
-import { isPlausibleMint, tokenImageBytes, tokenInfo } from "./token-info";
+import {
+  isPlausibleMint,
+  normalizeTokenSearchQuery,
+  tokenImageBytes,
+  tokenInfo,
+  tokenSearch,
+} from "./token-info";
 
 type JsonBody = Readonly<Record<string, unknown>> | readonly unknown[] | null;
 type RecordResult = Promise<Readonly<Record<string, unknown>>>;
@@ -415,7 +421,9 @@ export function createBurnFetchHandler(
       } catch (error) {
         const detail =
           error instanceof Error
-            ? `${error.name}: ${error.message}`.replace(/https?:\/\/\S+/g, "[url]").slice(0, 240)
+            ? `${error.name}: ${error.message}`
+                .replace(/https?:\/\/\S+/g, "[url]")
+                .slice(0, 240)
             : "unknown durable object error";
         emit("error", "metadata-upload-gate-error", {
           code: "METADATA_UPLOAD_GATE_UNAVAILABLE",
@@ -821,6 +829,13 @@ export function createBurnFetchHandler(
           200,
           isPlausibleMint(mint) ? await tokenInfo(mint) : { found: false }
         );
+      } else if (request.method === "GET" && path === "/token/search") {
+        const query = normalizeTokenSearchQuery(
+          url.searchParams.get("query") ?? url.searchParams.get("q")
+        );
+        response = query
+          ? json(200, { results: await tokenSearch(query) })
+          : json(200, { results: [] });
       } else if (request.method === "GET" && path === "/token/image") {
         const mint = url.searchParams.get("mint");
         const icon = isPlausibleMint(mint) ? await tokenImageBytes(mint) : null;

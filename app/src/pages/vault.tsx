@@ -28,6 +28,7 @@ import {
 } from "../chain/constants";
 import { BURN_DEADLINE_MS, ServiceError } from "../chain/service";
 import type { BurnReceipt, CurveState } from "../chain/service";
+import { isPlatformFeeLeg } from "../chain/policy";
 import {
   AddressBlock,
   CopyButton,
@@ -726,7 +727,10 @@ export function VaultPage({ search }: { search: VaultSearch }) {
           {legs.map((leg, i) => (
             <span key={i} className="mono">
               {i > 0 && " / "}
-              {legLabel(leg.mint, tokenNames)} {(leg.bps / 100).toFixed(1)}%
+              {isPlatformFeeLeg(leg.mint, leg.bps)
+                ? "Platform fees"
+                : `${legLabel(leg.mint, tokenNames)} burn`}{" "}
+              {(leg.bps / 100).toFixed(1)}%
             </span>
           ))}
           {verdict && (

@@ -77,9 +77,9 @@ export function LaunchPage() {
   const [metadataUploadError, setMetadataUploadError] = useState<string | null>(
     null
   );
-  // The creator chooses the 90% target; NEIRO is the fixed 10% leg. A
-  // pick that collides with a fixed leg is merged rather than emitted as a
-  // duplicate the program would reject with 6034.
+  // The creator chooses the 90% target; the platform allocation is fixed at
+  // 10%. A pick that collides with that leg is merged rather than emitted as
+  // a duplicate the program would reject with 6034.
   const [vaultPolicy, setVaultPolicy] = useState<VaultPolicy>(DEFAULT_POLICY);
   const [creatorMintOverride, setCreatorMintOverride] = useState<string | null>(
     null
@@ -102,8 +102,8 @@ export function LaunchPage() {
   const policy = buildPolicyLegs(creatorMint, vaultPolicy);
   const baseLegs: LegDraft[] = policyToLegs(policy);
   // KEYLESS reference binding. The own token's reference is its (future)
-  // bonding curve — fully determined before launch; the fixed legs get the
-  // live market scan.
+  // bonding curve — fully determined before launch; the platform leg gets
+  // the live market scan.
   const refState = useLegReferences(baseLegs, { pendingMint: mintAddress });
   const legs: LegDraft[] = baseLegs.map((leg, i) => {
     const reference = refState.legReferences[i];

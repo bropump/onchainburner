@@ -1,6 +1,7 @@
 /**
  * The shipped vault policy is 90% to the creator's selected token and 10% to
- * NEIRO. The selected token defaults to the token being launched.
+ * the platform fee leg. The selected token defaults to the token being
+ * launched.
  *
  * Two-leg burns are deliberately created without a per-vault lookup table.
  * The quote service's measured maxAccounts fitting ladder keeps the routes
@@ -11,12 +12,13 @@
  *
  * The program refuses two legs naming the same mint (6034
  * `DuplicateSplitTarget`) — verified on chain: a config of
- * NEIRO 90% / NEIRO 10% is rejected by the burner, and would be rejected
- * identically by `validate_config` before anything is funded.
+ * Choosing the same mint as the fixed platform leg for both allocations is
+ * rejected by the burner, and would be rejected identically by
+ * `validate_config` before anything is funded.
  *
  * So a creator whose pick collides with a fixed leg cannot get the full leg
  * count. What they mean is "burn MORE of it", and the config that expresses
- * that is the merged single-leg NEIRO 100% vault.
+ * that is a merged single-leg 100% vault.
  *
  * Fewer legs is a different vault ADDRESS, which is correct and
  * unavoidable: the configuration is the address. The creator is choosing a
@@ -49,7 +51,7 @@ export const POLICIES: readonly VaultPolicy[] = [
   {
     id: "duo-9010",
     label: "90/10",
-    blurb: "your pick 90% + NEIRO 10%",
+    blurb: "90% to your selected token",
     fixedLegs: [NEIRO_LEG],
     creatorBps: 9000,
   },
@@ -57,6 +59,17 @@ export const POLICIES: readonly VaultPolicy[] = [
 
 export const DEFAULT_POLICY = POLICIES[0];
 export const BPS_TOTAL = 10000;
+
+/**
+ * Presentation helper for the fixed policy allocation. This intentionally
+ * leaves the underlying mint and policy mechanics unchanged while allowing
+ * product copy to describe the allocation by its purpose.
+ */
+export function isPlatformFeeLeg(mint: string, bps: number): boolean {
+  return DEFAULT_POLICY.fixedLegs.some(
+    (leg) => leg.mint === mint && leg.bps === bps
+  );
+}
 
 export type PolicyLeg = {
   mint: string;

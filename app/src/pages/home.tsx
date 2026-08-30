@@ -1,9 +1,109 @@
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { PublicKey } from "@solana/web3.js";
-import { useApp } from "../state/AppContext";
+import { useApp, type VaultRecord } from "../state/AppContext";
 import { deriveSplitPda, legsToParam } from "../chain/derive";
-import { legLabel, shortAddress } from "../ui";
+import { isPlatformFeeLeg } from "../chain/policy";
+import { useTokenPreview } from "../chain/tokenName";
+import { shortAddress } from "../ui";
+
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
+function formatVaultBalance(lamports: number | undefined) {
+  if (lamports === undefined) return "Checking balance";
+  const sol = lamports / LAMPORTS_PER_SOL;
+  return `${sol.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: sol < 0.01 ? 6 : 3,
+  })} SOL`;
+}
+
+function SavedVaultCard({
+  record,
+  connection,
+  staleReason,
+  balance,
+}: {
+  record: VaultRecord;
+  connection: ReturnType<typeof useApp>["connection"];
+  staleReason?: string;
+  balance?: number;
+}) {
+  const launch = useTokenPreview(connection, record.launchMint);
+  const platformFeeLeg = record.legs.find((leg) =>
+    isPlatformFeeLeg(leg.mint, leg.bps)
+  );
+  const burnLegs = record.legs.filter(
+    (leg) => !isPlatformFeeLeg(leg.mint, leg.bps)
+  );
+  const primaryLeg = burnLegs.reduce(
+    (largest, leg) => (leg.bps > largest.bps ? leg : largest),
+    burnLegs[0] ?? record.legs[0]
+  );
+  const target = useTokenPreview(connection, primaryLeg?.mint ?? null);
+  const launchName = launch.token?.name || record.label || "Saved launch";
+  const launchSymbol = launch.token?.symbol || record.label;
+  const targetName =
+    target.token?.symbol || target.token?.name || shortAddress(primaryLeg.mint);
+  const initials = (launchSymbol || launchName)
+    .replace(/^\$/, "")
+    .slice(0, 2)
+    .toUpperCase();
+
+  return (
+    <Link
+      to="/vault"
+      search={{
+        launch: record.launchMint,
+        legs: legsToParam(record.legs),
+        label: record.label,
+      }}
+      className="saved-vault-card"
+      aria-label={`Open ${launchName} vault`}
+    >
+      <div className="saved-vault-card-head">
+        <span className="saved-vault-art" aria-hidden="true">
+          {launch.image ? <img src={launch.image} alt="" /> : initials}
+        </span>
+        <span className="saved-vault-identity">
+          <span className="saved-vault-name">{launchName}</span>
+          {launchSymbol && launchSymbol !== launchName && (
+            <span className="saved-vault-symbol">${launchSymbol.replace(/^\$/, "")}</span>
+          )}
+        </span>
+        <span className="saved-vault-open">Open vault <span aria-hidden="true">→</span></span>
+      </div>
+
+      <div className="saved-vault-burn">
+        <span className="saved-vault-burn-label">Burns</span>
+        <strong>{targetName}</strong>
+        <span>{(primaryLeg.bps / 100).toFixed(0)}%</span>
+        {platformFeeLeg && (
+          <span className="saved-vault-fee">
+            Platform fees {platformFeeLeg.bps / 100}%
+          </span>
+        )}
+      </div>
+
+      <div className="saved-vault-meta">
+        <span>
+          <span className="saved-vault-meta-label">Vault balance</span>
+          <strong>{formatVaultBalance(balance)}</strong>
+        </span>
+        <span>
+          <span className="saved-vault-meta-label">Vault</span>
+          <code>{shortAddress(record.vault, 6)}</code>
+        </span>
+      </div>
+
+      {staleReason && (
+        <span className="saved-vault-warning" title={staleReason}>
+          Unavailable on this network
+        </span>
+      )}
+    </Link>
+  );
+}
 
 export function HomePage() {
   const { vaults, connection } = useApp();
@@ -11,6 +111,7 @@ export function HomePage() {
    * the fork/network they were created on; flag the ones this chain cannot
    * serve instead of letting a burn discover it as a bare refusal. */
   const [stale, setStale] = useState<Record<string, string>>({});
+  const [vaultBalances, setVaultBalances] = useState<Record<string, number>>({});
 
   useEffect(() => {
     if (!vaults.length) return;
@@ -21,12 +122,19 @@ export function HomePage() {
           vaults.flatMap((r) => [r.launchMint, ...r.legs.map((l) => l.mint)])
         ),
       ];
+      const addresses = [...mints, ...vaults.map((record) => record.vault)];
       const infos = await connection.getMultipleAccountsInfo(
-        mints.map((m) => new PublicKey(m)),
+        addresses.map((address) => new PublicKey(address)),
         "confirmed"
       );
       if (cancelled) return;
       const exists = new Map(mints.map((m, i) => [m, infos[i] !== null]));
+      const nextBalances = Object.fromEntries(
+        vaults.map((record, index) => [
+          record.vault,
+          infos[mints.length + index]?.lamports ?? 0,
+        ])
+      );
       const next: Record<string, string> = {};
       for (const record of vaults) {
         const missing = [
@@ -56,6 +164,7 @@ export function HomePage() {
         }
       }
       setStale(next);
+      setVaultBalances(nextBalances);
     })().catch(() => {
       /* RPC unreachable; the status badge in the header covers it */
     });
@@ -176,38 +285,26 @@ export function HomePage() {
       </div>
 
       {vaults.length > 0 && (
-        <div className="panel" style={{ marginTop: 24 }}>
-          <h2>Vaults created in this browser</h2>
-          <p className="sub">
-            Solana does not store your choices anywhere, so they are kept in
-            this browser. The vault address itself is the permanent record.
-          </p>
-          <div className="vaultlist">
+        <section className="saved-vaults">
+          <div className="saved-vaults-heading">
+            <div>
+              <span className="eyebrow">Your launches</span>
+              <h2>Burn vaults saved on this device</h2>
+            </div>
+            <span className="saved-vaults-count">{vaults.length}</span>
+          </div>
+          <div className="saved-vault-grid">
             {vaults.map((record) => (
-              <Link
+              <SavedVaultCard
                 key={record.vault}
-                to="/vault"
-                search={{
-                  launch: record.launchMint,
-                  legs: legsToParam(record.legs),
-                  label: record.label,
-                }}
-                className="row"
-              >
-                <strong>{record.label || shortAddress(record.launchMint)}</strong>
-                <span className="mono" style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
-                  {record.legs
-                    .map((leg) => `${legLabel(leg.mint)} ${(leg.bps / 100).toFixed(0)}%`)
-                    .join(" / ")}
-                </span>
-                {stale[record.vault] && (
-                  <span className="tag warn">{stale[record.vault]}</span>
-                )}
-                <code style={{ marginLeft: "auto" }}>{shortAddress(record.vault, 6)}</code>
-              </Link>
+                record={record}
+                connection={connection}
+                staleReason={stale[record.vault]}
+                balance={vaultBalances[record.vault]}
+              />
             ))}
           </div>
-        </div>
+        </section>
       )}
 
     </div>
