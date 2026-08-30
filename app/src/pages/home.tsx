@@ -288,8 +288,7 @@ export function HomePage() {
         <section className="saved-vaults">
           <div className="saved-vaults-heading">
             <div>
-              <span className="eyebrow">Your launches</span>
-              <h2>Burn vaults saved on this device</h2>
+              <h2>New vaults burning</h2>
             </div>
             <span className="saved-vaults-count">{vaults.length}</span>
           </div>
