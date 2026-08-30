@@ -12,6 +12,7 @@ import { shortAddress } from "../ui";
 import { LegDraft } from "./configEditor";
 
 const PRESET_ORDER = [
+  "$COOK",
   "NEIRO",
   "WIF",
   "FARTCOIN",

@@ -48,6 +48,12 @@ export const KNOWN_TOKENS: {
   decimals: number;
   note?: string;
 }[] = [
+  {
+    symbol: "$COOK",
+    mint: "EBmJhqzjyfd3SUrTjUu8Gzi8zMQWDXmyuDhg2a7cCjxW",
+    decimals: 6,
+    note: "canonical Pump curve, protocol-owned liquidity (verified 2026-08-30)",
+  },
   // Added 2026-08-28 on owner request. Each was resolved against the live
   // reference resolver before being listed -- a preset that cannot be priced
   // is a preset that always fails, so none of these is here on trust.
