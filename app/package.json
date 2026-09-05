@@ -32,7 +32,7 @@
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
-    "@types/node": "^22.10.0",
+    "@types/node": "^26.4.1",
     "wrangler": "4.127.1"
   },
   "imports": {
