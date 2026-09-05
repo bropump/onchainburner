@@ -56,8 +56,8 @@ importers:
         specifier: 11.8.0
         version: 11.8.0
       prettier:
-        specifier: ^2.6.2
-        version: 2.8.8
+        specifier: ^3.9.6
+        version: 3.9.6
       ts-node:
         specifier: 10.9.2
         version: 10.9.2(@types/node@22.20.1)(typescript@5.9.3)
@@ -1503,9 +1503,9 @@ packages:
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
-  prettier@2.8.8:
-    resolution: {integrity: sha512-tdN8qQGvNjw4CHbY+XXk0JgCXn9QiF21a55rBe5LJAU+kDyC4WQn4+awm2Xfk2lQMk5fKup9XgzTZtGkjBdP9Q==}
-    engines: {node: '>=10.13.0'}
+  prettier@3.9.6:
+    resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
+    engines: {node: '>=14'}
     hasBin: true
 
   proxy-from-env@2.1.0:
@@ -1551,6 +1551,7 @@ packages:
   rpc-websockets@9.3.10:
     resolution: {integrity: sha512-QT5PQ6LiWhA5RCS93oWwgxU4XzQltkYm8C3aTmmKEgj0HolGRo3VbdzELw7CEV35l9T7Amha8Vnr4rCfSjVP+w==}
     engines: {node: '>=18'}
+    deprecated: this package has been deprecated
 
   run-async@2.4.1:
     resolution: {integrity: sha512-tvVnVv01b8c1RrA6Ep7JkStj85Guv/YrMcwqYQnwjsAS2cTmmPGBBjAjpCW7RrSodNSoE2/qg9O4bceNvUuDgQ==}
@@ -3513,7 +3514,7 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  prettier@2.8.8: {}
+  prettier@3.9.6: {}
 
   proxy-from-env@2.1.0: {}
 
