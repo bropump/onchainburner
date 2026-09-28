@@ -70,7 +70,7 @@ solana-system-interface = "=3.2.0"
 solana-transaction = "=4.1.2"
 solana-transaction-error = "=3.3.0"
 spl-token-interface = "=2.0.0"
-wincode = "=0.5.4"
+wincode = "=0.6.1"
 
 # Mirrors the production workspace release profile so the size comparison is
 # like-for-like.
